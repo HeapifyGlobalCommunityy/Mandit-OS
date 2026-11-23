@@ -192,7 +192,7 @@ Local orchestration uses Docker Compose (`deploy/docker-compose.yml`). The cloud
 | Concern | Choice |
 |---|---|
 | Backend | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2.x, Alembic |
-| Frontend | Next.js 14+, TypeScript (strict), React |
+| Frontend | Next.js 14+, TypeScript (strict), React; Node.js 24 LTS, pnpm 9+ |
 | Data | PostgreSQL 16 (records, ledger); Redis 7 (nonces, rate limits, short-lived state) |
 | Cryptography | Ed25519 (services, agents, merchants); ES256/ECDSA P-256 (user keys, Phase 1 via WebCrypto); SHA-256; RFC 8785 JSON Canonicalization Scheme (JCS) |
 | Agent integration | Model Context Protocol (MCP) server exposed by the Gateway |
@@ -260,7 +260,7 @@ Mandit-OS/
 │   │   │   ├── tokens/           # Team 4
 │   │   │   ├── payments/         # Team 4
 │   │   │   └── evidence/         # Team 5
-│   │   ├── migrations/           # Alembic; one migration branch per module
+│   │   ├── migrations/           # Alembic; one linear history, one migration per change
 │   │   └── tests/
 │   ├── mock-merchant/            # Team 3 (+ Team 6 fixtures under fixtures/malicious/)
 │   └── mock-psp/                 # Team 4

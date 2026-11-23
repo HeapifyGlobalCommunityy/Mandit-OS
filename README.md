@@ -76,13 +76,13 @@ docs/               Documentation
 ```bash
 git clone https://github.com/HeapifyGlobalCommunityy/Mandit-OS.git
 cd Mandit-OS && git checkout develop
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
 cp .env.example .env
-make setup && make migrate && make seed
-make dev          # console at http://localhost:3000, API at http://localhost:8000
-make test
+alembic upgrade head && python -m scripts.seed    # needs a local PostgreSQL 16
 ```
 
-The `make` targets are introduced by the initial scaffolding pull request. See [CONTRIBUTING.md §4](CONTRIBUTING.md#4-getting-started).
+Node 24 LTS (`nvm use`) is needed for the console. Docker is optional for now. Full setup is in [CONTRIBUTING.md §4](CONTRIBUTING.md#4-getting-started).
 
 ## Documentation
 

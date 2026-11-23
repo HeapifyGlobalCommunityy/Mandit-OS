@@ -1,0 +1,3 @@
+# Test, lint and tooling dependencies.
+-r requirements.txt
+pytest>=8.0

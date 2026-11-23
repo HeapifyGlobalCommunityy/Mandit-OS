@@ -54,28 +54,49 @@ All participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). Repo
 | Tool | Version |
 |---|---|
 | Git | 2.40 or later |
-| Docker and Docker Compose | Docker 24 or later, Compose v2 |
 | Python | 3.12 |
-| Node.js | 20 LTS |
-| `uv` or `pip` | Current |
+| Node.js | 24 LTS (pinned in `.nvmrc`; install with `nvm use`) |
 | `pnpm` | 9 or later |
+| PostgreSQL | 16 (local install, or Docker for the database only; see §4.2) |
+| Docker | Optional until the Compose environment is added (Week 3 or later) |
+
+Python dependencies live in `requirements.txt` (runtime) and `requirements-dev.txt` (test and lint). Add a package to the right file in the same PR that first imports it.
 
 ### 4.2 First-time setup
+
+Every contributor runs their **own local database**. Databases are never committed. What is committed is the schema (Alembic migrations) and the synthetic seed script, so anyone can rebuild an identical database in seconds.
 
 ```bash
 git clone https://github.com/HeapifyGlobalCommunityy/Mandit-OS.git
 cd Mandit-OS
 git checkout develop
-cp .env.example .env                    # synthetic, non-secret defaults
-docker compose -f deploy/docker-compose.yml up -d postgres redis
-make setup                              # installs Python and Node dependencies, pre-commit hooks
-make migrate                            # applies database migrations
-make seed                               # loads synthetic users, merchants and agents
-make dev                                # runs core, mock-merchant, mock-psp and console
-make test                               # runs the unit and integration suites
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env                    # contains DATABASE_URL and other synthetic, non-secret defaults
+# Create the database. Pick ONE:
+#   a) local Postgres:   createdb mandit && createdb mandit_test
+#   b) Docker (DB only): docker run -d --name mandit-pg -e POSTGRES_PASSWORD=mandit -e POSTGRES_DB=mandit -p 5432:5432 postgres:16   # then: docker exec mandit-pg createdb -U postgres mandit_test
+alembic upgrade head                    # creates all tables
+python -m scripts.seed                  # loads synthetic users, merchants and agents
 ```
 
-> The `make` targets and `deploy/` files are created by the initial scaffolding pull request (Week 1). Until then, follow the module documents and agree commands in the scaffolding pull request.
+Rules: the schema changes only through a new Alembic migration (one per change, reversible); tests use the separate `mandit_test` database and never touch your dev data; to reset, drop the database and run the two commands above again. Make targets (`make setup`, `make dev`, `make test`) will wrap these steps once the scaffolding pull request lands.
+
+### 4.2.1 Database and migrations
+
+Docker and `apt` only provide the PostgreSQL **server**, and the database starts empty. Tables come from Alembic, which is a separate command that connects using `DATABASE_URL` from your `.env`. The setup is the same for Docker and native installs.
+
+| When | Command |
+|---|---|
+| First setup, and after every `git pull` | `alembic upgrade head` (applies only the migrations you haven't run yet) |
+| Check where your database is | `alembic current` |
+| Undo your last migration (your own unmerged work) | `alembic downgrade -1` |
+| Start from a clean slate | `dropdb mandit && createdb mandit && alembic upgrade head && python -m scripts.seed` (with Docker: `docker exec mandit-pg dropdb -U postgres mandit`, and so on) |
+| Create a migration after changing a model | `alembic revision -m "short description"`, then write the SQL in `upgrade()`/`downgrade()` (autogenerate only works once SQLAlchemy models exist) |
+
+Restarting or recreating a Docker container without a volume wipes the database; just rerun the two setup commands. Tests apply migrations to `mandit_test` automatically from the pytest fixtures, so you do not run them by hand for tests. If a test run reports a missing table or column, you probably forgot `alembic upgrade head` after pulling.
+
+> `requirements*.txt`, `.env.example`, `alembic.ini` and migrations `0001`–`0005` exist. The seed script (`scripts/seed.py`) is still to be written.
 
 ### 4.3 Pre-commit hooks
 

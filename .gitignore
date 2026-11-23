@@ -1,0 +1,45 @@
+# Secrets and local config (commit .env.example, never .env)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Node / Next.js console
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+coverage/
+
+# Local databases and dumps (the schema lives in migrations)
+*.sqlite
+*.sqlite3
+*.db
+*.sql.gz
+pgdata/
+
+# Red-team run output (corpus and harness are committed, results are not)
+redteam/reports/*
+!redteam/reports/.gitkeep
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
