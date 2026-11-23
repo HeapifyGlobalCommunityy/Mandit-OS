@@ -1,0 +1,56 @@
+# CODEOWNERS for Mandit OS
+#
+# Replace each <team-N-...> placeholder with the GitHub usernames or teams (for example
+# HeapifyGlobalCommunityy/team-identity) of the owners, then uncomment the line.
+# Code owners are requested for review automatically. See CONTRIBUTING.md §8.5 for approval rules.
+# Later lines take precedence over earlier ones.
+
+# Default: technical lead
+# *                                         <tech-lead>
+
+# Shared contracts and documentation (require two teams)
+# /schemas/                                 <tech-lead> <team-5-lead>
+# /services/core/mandit/common/             <tech-lead> <team-1-lead> <team-4-lead>
+# /docs/REFERENCE.md                        <tech-lead>
+# /docs/modules/05-evidence-and-experience.md <team-5-lead>
+# /deploy/                                  <tech-lead>
+# /.github/                                 <tech-lead>
+
+# Team 1: Identity and Mandate
+# /services/core/mandit/identity/           <team-1-identity>
+# /services/core/mandit/mandates/           <team-1-identity>
+# /sdk/                                     <team-1-identity>
+# /apps/console/app/mandates/               <team-1-identity>
+# /docs/modules/01-identity-and-mandate.md  <team-1-identity>
+
+# Team 2: Safety Scanning
+# /services/core/mandit/gateway/            <team-2-safety>
+# /services/core/mandit/safety/             <team-2-safety>
+# /apps/demo-agent/                         <team-2-safety> <team-6-redteam>
+# /docs/modules/02-safety-scanning.md       <team-2-safety>
+
+# Team 3: Grounding and Verification
+# /services/core/mandit/grounding/          <team-3-grounding>
+# /services/mock-merchant/                  <team-3-grounding>
+# /services/mock-merchant/fixtures/malicious/ <team-6-redteam> <team-3-grounding>
+# /docs/modules/03-grounding-and-verification.md <team-3-grounding>
+
+# Team 4: Policy and Payments
+# /services/core/mandit/policy/             <team-4-payments>
+# /services/core/mandit/confirmation/       <team-4-payments>
+# /services/core/mandit/tokens/             <team-4-payments>
+# /services/core/mandit/payments/           <team-4-payments>
+# /services/mock-psp/                       <team-4-payments>
+# /apps/console/app/confirmations/          <team-4-payments>
+# /docs/modules/04-policy-and-payments.md   <team-4-payments>
+
+# Team 5: Evidence and Experience
+# /services/core/mandit/evidence/           <team-5-evidence>
+# /services/core/mandit/common/events.py    <team-5-evidence>
+# /apps/console/app/audit/                  <team-5-evidence>
+# /docs/modules/05-evidence-and-experience.md <team-5-evidence>
+
+# Team 6: Red Team and Evaluation
+# /redteam/                                 <team-6-redteam>
+# /docs/EVALUATION.md                       <team-6-redteam>
+# /docs/modules/06-red-team-and-evaluation.md <team-6-redteam>
