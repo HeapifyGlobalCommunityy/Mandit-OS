@@ -86,19 +86,35 @@ The `make` targets are introduced by the initial scaffolding pull request. See [
 
 ## Documentation
 
-| Audience | Start here |
-|---|---|
-| Every contributor | [CONTRIBUTING.md](CONTRIBUTING.md), [docs/REFERENCE.md](docs/REFERENCE.md) |
-| Team 1: Identity and Mandate | [docs/modules/01-identity-and-mandate.md](docs/modules/01-identity-and-mandate.md) |
-| Team 2: Safety Scanning | [docs/modules/02-safety-scanning.md](docs/modules/02-safety-scanning.md) |
-| Team 3: Grounding and Verification | [docs/modules/03-grounding-and-verification.md](docs/modules/03-grounding-and-verification.md) |
-| Team 4: Policy and Payments | [docs/modules/04-policy-and-payments.md](docs/modules/04-policy-and-payments.md) |
-| Team 5: Evidence and Experience | [docs/modules/05-evidence-and-experience.md](docs/modules/05-evidence-and-experience.md) |
-| Team 6: Red Team and Evaluation | [docs/modules/06-red-team-and-evaluation.md](docs/modules/06-red-team-and-evaluation.md) |
-| Reviewers and auditors | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), [docs/EVALUATION.md](docs/EVALUATION.md), [docs/adr/](docs/adr/) |
-| Planning | [docs/ROADMAP.md](docs/ROADMAP.md), [docs/ASSUMPTIONS.md](docs/ASSUMPTIONS.md) |
+Three documents, plus the per-team specifications they point to:
 
-The full index, including which documents must be updated for which kinds of change, is in [docs/README.md](docs/README.md).
+| Document | What it covers |
+|---|---|
+| This README | Overview, status, open questions, vulnerability reporting |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Workflow, branching, PRs, standards, and which docs to update for which change |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | Architecture, pipeline, conventions, endpoints, decision model, delivery gates (§15), glossary, error codes, threat model |
+
+Per-team specifications (`docs/modules/`):
+
+| Team | Specification |
+|---|---|
+| 1: Identity and Mandate | [01-identity-and-mandate.md](docs/modules/01-identity-and-mandate.md) |
+| 2: Safety Scanning | [02-safety-scanning.md](docs/modules/02-safety-scanning.md) |
+| 3: Grounding and Verification | [03-grounding-and-verification.md](docs/modules/03-grounding-and-verification.md) |
+| 4: Policy and Payments | [04-policy-and-payments.md](docs/modules/04-policy-and-payments.md) |
+| 5: Evidence and Experience | [05-evidence-and-experience.md](docs/modules/05-evidence-and-experience.md) (includes the ledger event catalogue) |
+| 6: Red Team and Evaluation | [06-red-team-and-evaluation.md](docs/modules/06-red-team-and-evaluation.md) (includes the evaluation log) |
+
+## Open Questions
+
+| ID | Question | Needed by |
+|---|---|---|
+| OQ-01 | Which cloud provider and hosting budget will the demo use? | G4 |
+| OQ-02 | What is the p95 latency target for automated decisions? | G1 |
+| OQ-03 | What are the evidence retention period and deletion policy? | G4 |
+| OQ-04 | Server-issued draft mandate IDs or client-generated ULIDs? | G1 |
+| OQ-05 | Confirm metric targets (≥ 95% block rate, < 5% false blocks, ≥ 95% verification accuracy) | G1 |
+| OQ-06 | Which LLM and agent framework will the demo agent use? | G2 |
 
 ## Contributing
 
@@ -106,7 +122,11 @@ All pull requests target the **`develop`** branch. Branch names follow `<type>/<
 
 ## Security
 
-Do not report vulnerabilities in public issues. See [SECURITY.md](SECURITY.md).
+Mandit OS uses synthetic data and simulated rails only; never deploy it with real payments, card data or personal data.
+
+**Do not report vulnerabilities in public issues or PRs.** Use GitHub Private Vulnerability Reporting (Security tab), or message the technical lead or the Team 6 lead. Include the affected module/commit, the safety invariant violated ([REFERENCE §2.2](docs/REFERENCE.md#22-safety-invariants-frozen-at-the-week-2-gate)), reproduction steps using synthetic fixtures, and the impact. Targets: acknowledgement in 2 working days, triage in 5, fix for a violated invariant before the next gate. Fixes go on a `security/<module>/<description>` branch and add a red-team corpus case.
+
+Never commit keys, tokens or `.env` files (the `gitleaks` hook and CI enforce this); if one leaks, rotate it immediately and report it. Attack techniques in `redteam/` are for testing this project only.
 
 ## Code of Conduct
 
