@@ -1,4 +1,5 @@
 """Alembic environment. The database URL comes from DATABASE_URL (see .env.example)."""
+
 import os
 
 from alembic import context
