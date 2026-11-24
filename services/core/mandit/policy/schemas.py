@@ -41,6 +41,16 @@ class RuleHit:
     effect: DecisionOutcome
     detail: dict[str, Any] | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "rule_id": self.rule_id,
+            "code": self.code,
+            "effect": str(self.effect.value if hasattr(self.effect, "value") else self.effect),
+        }
+        if self.detail is not None:
+            d["detail"] = self.detail
+        return d
+
 
 # --- Team 1 Contracts (Identity & Mandate) ---
 
@@ -282,3 +292,195 @@ class DecisionResult:
     stage: EvaluationStage
     rules_fired: tuple[RuleHit, ...]
     trust_score: float | None = None
+
+
+@dataclass(frozen=True)
+class Decision:
+    """Canonical Policy Decision representation matching migration 0004 and API response."""
+    decision_id: str
+    proposal_id: str
+    proposal_hash: str
+    transaction_id: str
+    attempt: int
+    outcome: DecisionOutcome
+    stage: EvaluationStage
+    rules_fired: tuple[RuleHit, ...]
+    trust_score: float | None
+    policy_version: str
+    trust_model_version: str | None
+    inputs_snapshot_id: str
+    inputs_hash: str
+    confirmation_id: str | None
+    expires_at: datetime
+    signature: dict[str, Any]
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.expires_at.tzinfo is None:
+            raise ValueError("decision.expires_at must be timezone-aware")
+        if self.created_at.tzinfo is None:
+            raise ValueError("decision.created_at must be timezone-aware")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "decision_id": self.decision_id,
+            "proposal_id": self.proposal_id,
+            "proposal_hash": self.proposal_hash,
+            "transaction_id": self.transaction_id,
+            "attempt": self.attempt,
+            "outcome": str(self.outcome.value if hasattr(self.outcome, "value") else self.outcome),
+            "stage": str(self.stage.value if hasattr(self.stage, "value") else self.stage),
+            "rules_fired": [r.to_dict() for r in self.rules_fired],
+            "trust_score": float(self.trust_score) if self.trust_score is not None else None,
+            "policy_version": self.policy_version,
+            "trust_model_version": self.trust_model_version,
+            "inputs_snapshot_id": self.inputs_snapshot_id,
+            "inputs_hash": self.inputs_hash,
+            "confirmation_id": self.confirmation_id,
+            "expires_at": self.expires_at.isoformat(),
+            "signature": self.signature,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
+    """Serialize FrozenDecisionInputs to a plain JSON-compatible dictionary for Evidence snapshotting."""
+    return {
+        "evaluated_at": inputs.evaluated_at.isoformat(),
+        "attempt": inputs.attempt,
+        "proposal_id": inputs.proposal_id,
+        "proposal_hash": inputs.proposal_hash,
+        "transaction_id": inputs.transaction_id,
+        "payment_method": inputs.payment_method,
+        "user_merchant_history": inputs.user_merchant_history,
+        "identity": {
+            "agent": {
+                "agent_id": inputs.identity.agent.agent_id,
+                "operator_id": inputs.identity.agent.operator_id,
+                "key_id": inputs.identity.agent.key_id,
+                "key_thumbprint": inputs.identity.agent.key_thumbprint,
+                "scopes": sorted(list(inputs.identity.agent.scopes)),
+                "credential_id": inputs.identity.agent.credential_id,
+                "verified_at": inputs.identity.agent.verified_at.isoformat(),
+            },
+            "is_active": inputs.identity.is_active,
+            "operator_verified": inputs.identity.operator_verified,
+            "kya_token_valid": inputs.identity.kya_token_valid,
+            "key_bound": inputs.identity.key_bound,
+        },
+        "mandate": {
+            "mandate_id": inputs.mandate.mandate_id,
+            "user_id": inputs.mandate.user_id,
+            "version": inputs.mandate.version,
+            "agent_id": inputs.mandate.agent_id,
+            "agent_key_thumbprint": inputs.mandate.agent_key_thumbprint,
+            "status": inputs.mandate.status,
+            "spent_minor": inputs.mandate.spent_minor,
+            "spend_count": inputs.mandate.spend_count,
+            "not_before": inputs.mandate.not_before.isoformat(),
+            "expires_at": inputs.mandate.expires_at.isoformat(),
+            "constraints": {
+                "approval_threshold_minor": inputs.mandate.constraints.approval_threshold_minor,
+                "max_amount_per_txn_minor": inputs.mandate.constraints.max_amount_per_txn_minor,
+                "max_amount_total_minor": inputs.mandate.constraints.max_amount_total_minor,
+                "max_txn_count": inputs.mandate.constraints.max_txn_count,
+                "allowed_merchants": sorted(list(inputs.mandate.constraints.allowed_merchants)),
+                "allowed_domains": sorted(list(inputs.mandate.constraints.allowed_domains)),
+                "allowed_categories": sorted(list(inputs.mandate.constraints.allowed_categories)),
+                "forbidden_line_types": sorted(list(inputs.mandate.constraints.forbidden_line_types)),
+                "payment_methods": sorted(list(inputs.mandate.constraints.payment_methods)),
+                "currency": inputs.mandate.constraints.currency,
+                "require_refund_policy": inputs.mandate.constraints.require_refund_policy,
+                "min_returns_window_days": inputs.mandate.constraints.min_returns_window_days,
+                "max_delivery_days": inputs.mandate.constraints.max_delivery_days,
+            },
+        },
+        "risk": {
+            "merchant_domain": inputs.risk.merchant_domain,
+            "site_risk_score": inputs.risk.site_risk_score,
+            "site_risk_level": inputs.risk.site_risk_level,
+            "max_injection_severity": inputs.risk.max_injection_severity,
+            "injection_content_ids": list(inputs.risk.injection_content_ids),
+            "scanner_version": inputs.risk.scanner_version,
+            "signals": [
+                {
+                    "source_id": s.source_id,
+                    "content_id": s.content_id,
+                    "flag": s.flag,
+                    "severity": s.severity,
+                    "detail": s.detail,
+                }
+                for s in inputs.risk.signals
+            ],
+        },
+        "verification": {
+            "verification_id": inputs.verification.verification_id,
+            "proposal_id": inputs.verification.proposal_id,
+            "proposal_hash": inputs.verification.proposal_hash,
+            "attempt": inputs.verification.attempt,
+            "checkout": {
+                "checkout_id": inputs.verification.checkout.checkout_id,
+                "checkout_hash": inputs.verification.checkout.checkout_hash,
+                "merchant_id": inputs.verification.checkout.merchant_id,
+                "merchant_domain": inputs.verification.checkout.merchant_domain,
+                "payee_id": inputs.verification.checkout.payee_id,
+                "amount_minor": inputs.verification.checkout.amount_minor,
+                "currency": inputs.verification.checkout.currency,
+                "merchant_signature_valid": inputs.verification.checkout.merchant_signature_valid,
+                "expires_at": inputs.verification.checkout.expires_at.isoformat(),
+            },
+            "calculation": {
+                "computed_total_minor": inputs.verification.calculation.computed_total_minor,
+                "merchant_total_minor": inputs.verification.calculation.merchant_total_minor,
+                "agent_stated_total_minor": inputs.verification.calculation.agent_stated_total_minor,
+                "reconciled": inputs.verification.calculation.reconciled,
+                "calculator_version": inputs.verification.calculation.calculator_version,
+                "subtotal_minor": inputs.verification.calculation.subtotal_minor,
+                "fees_minor": inputs.verification.calculation.fees_minor,
+                "discount_minor": inputs.verification.calculation.discount_minor,
+                "tax_minor": inputs.verification.calculation.tax_minor,
+                "agent_stated_merchant_id": inputs.verification.calculation.agent_stated_merchant_id,
+                "agent_stated_currency": inputs.verification.calculation.agent_stated_currency,
+            },
+            "mandate_match": {
+                "satisfied": inputs.verification.mandate_match.satisfied,
+                "violations": list(inputs.verification.mandate_match.violations),
+                "signals": list(inputs.verification.mandate_match.signals),
+            },
+            "selection": {
+                "pricier_alternative_chosen": inputs.verification.selection.pricier_alternative_chosen,
+                "cheapest_matching_minor": inputs.verification.selection.cheapest_matching_minor,
+                "difference_minor": inputs.verification.selection.difference_minor,
+            },
+            "trust": {
+                "score": inputs.verification.trust.score,
+                "band": inputs.verification.trust.band,
+                "components": inputs.verification.trust.components,
+                "weights": inputs.verification.trust.weights,
+                "trust_model_version": inputs.verification.trust.trust_model_version,
+            },
+            "claims": list(inputs.verification.claims),
+            "critical_unverified": list(inputs.verification.critical_unverified),
+            "abstentions": list(inputs.verification.abstentions),
+            "verifier_version": inputs.verification.verifier_version,
+            "created_at": inputs.verification.created_at.isoformat() if inputs.verification.created_at else None,
+        },
+        "confirmation": (
+            {
+                "confirmation_id": inputs.confirmation.confirmation_id,
+                "decision_id": inputs.confirmation.decision_id,
+                "proposal_id": inputs.confirmation.proposal_id,
+                "proposal_hash": inputs.confirmation.proposal_hash,
+                "user_id": inputs.confirmation.user_id,
+                "display": inputs.confirmation.display,
+                "challenge": inputs.confirmation.challenge,
+                "status": inputs.confirmation.status,
+                "expires_at": inputs.confirmation.expires_at.isoformat(),
+                "response_signature": inputs.confirmation.response_signature,
+                "signature_verified": inputs.confirmation.signature_verified,
+                "responded_at": inputs.confirmation.responded_at.isoformat() if inputs.confirmation.responded_at else None,
+            }
+            if inputs.confirmation
+            else None
+        ),
+    }

@@ -5,6 +5,7 @@ Defines protocols for individual policy rules and the pure policy engine.
 from typing import Protocol
 
 from mandit.policy.schemas import (
+    Decision,
     DecisionOutcome,
     DecisionResult,
     FrozenDecisionInputs,
@@ -38,4 +39,16 @@ class PolicyEngine(Protocol):
 
         Used live by DecisionService and offline by Team 5 replay (INV-11).
         """
+        ...
+
+
+class DecisionService(Protocol):
+    """Decision Service protocol per docs/modules/04-policy-and-payments.md §3."""
+
+    async def evaluate(self, proposal_id: str) -> Decision:
+        """Run policy decision pipeline for the given proposal."""
+        ...
+
+    async def get(self, decision_id: str) -> Decision | None:
+        """Retrieve stored policy decision by ID."""
         ...

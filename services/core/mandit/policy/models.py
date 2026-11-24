@@ -1,1 +1,144 @@
-"""TODO"""
+"""SQLAlchemy models for Policy decisions and Confirmations.
+
+Matches migration 0004_policy_and_payments.py exactly.
+"""
+from datetime import datetime, timezone
+from typing import Any
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Integer,
+    JSON,
+    Numeric,
+    Text,
+)
+
+from mandit.common.models import Base
+from mandit.policy.schemas import (
+    Decision,
+    DecisionOutcome,
+    EvaluationStage,
+    RuleHit,
+)
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def ensure_tz(dt: datetime | None) -> datetime | None:
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+class DecisionModel(Base):
+    """SQLAlchemy model for decisions table matching migration 0004."""
+    __tablename__ = "decisions"
+
+    decision_id = Column(Text, primary_key=True)
+    proposal_id = Column(Text, nullable=False)
+    proposal_hash = Column(Text, nullable=False)
+    transaction_id = Column(Text, nullable=False)
+    attempt = Column(Integer, nullable=False)
+    outcome = Column(Text, nullable=False)
+    stage = Column(Text, nullable=False)
+    rules_fired = Column(JSON, nullable=False)
+    trust_score = Column(Numeric(4, 3), nullable=True)
+    policy_version = Column(Text, nullable=False)
+    trust_model_version = Column(Text, nullable=True)
+    inputs_snapshot_id = Column(Text, nullable=False)
+    inputs_hash = Column(Text, nullable=False)
+    confirmation_id = Column(Text, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    signature = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=now_utc)
+
+    def to_schema(self) -> Decision:
+        """Convert SQLAlchemy model to canonical Decision dataclass."""
+        rules = tuple(
+            RuleHit(
+                rule_id=r["rule_id"],
+                code=r["code"],
+                effect=DecisionOutcome(r["effect"]),
+                detail=r.get("detail"),
+            )
+            for r in (self.rules_fired or [])
+        )
+        return Decision(
+            decision_id=self.decision_id,
+            proposal_id=self.proposal_id,
+            proposal_hash=self.proposal_hash,
+            transaction_id=self.transaction_id,
+            attempt=self.attempt,
+            outcome=DecisionOutcome(self.outcome),
+            stage=EvaluationStage(self.stage),
+            rules_fired=rules,
+            trust_score=float(self.trust_score) if self.trust_score is not None else None,
+            policy_version=self.policy_version,
+            trust_model_version=self.trust_model_version,
+            inputs_snapshot_id=self.inputs_snapshot_id,
+            inputs_hash=self.inputs_hash,
+            confirmation_id=self.confirmation_id,
+            expires_at=ensure_tz(self.expires_at),  # type: ignore[arg-type]
+            signature=self.signature,
+            created_at=ensure_tz(self.created_at),  # type: ignore[arg-type]
+        )
+
+    @classmethod
+    def from_schema(cls, d: Decision) -> "DecisionModel":
+        """Create SQLAlchemy model from canonical Decision dataclass."""
+        return cls(
+            decision_id=d.decision_id,
+            proposal_id=d.proposal_id,
+            proposal_hash=d.proposal_hash,
+            transaction_id=d.transaction_id,
+            attempt=d.attempt,
+            outcome=d.outcome.value if hasattr(d.outcome, "value") else str(d.outcome),
+            stage=d.stage.value if hasattr(d.stage, "value") else str(d.stage),
+            rules_fired=[r.to_dict() for r in d.rules_fired],
+            trust_score=d.trust_score,
+            policy_version=d.policy_version,
+            trust_model_version=d.trust_model_version,
+            inputs_snapshot_id=d.inputs_snapshot_id,
+            inputs_hash=d.inputs_hash,
+            confirmation_id=d.confirmation_id,
+            expires_at=d.expires_at,
+            signature=d.signature,
+            created_at=d.created_at,
+        )
+
+
+class ConfirmationModel(Base):
+    """SQLAlchemy model for confirmations table matching migration 0004."""
+    __tablename__ = "confirmations"
+
+    confirmation_id = Column(Text, primary_key=True)
+    decision_id = Column(Text, nullable=False)
+    proposal_id = Column(Text, nullable=False)
+    proposal_hash = Column(Text, nullable=False)
+    user_id = Column(Text, nullable=False)
+    display = Column(JSON, nullable=False)
+    challenge = Column(Text, nullable=False)
+    status = Column(Text, nullable=False)
+    response_signature = Column(JSON, nullable=True)
+    responded_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        exp = ensure_tz(self.expires_at)
+        resp = ensure_tz(self.responded_at)
+        return {
+            "confirmation_id": self.confirmation_id,
+            "decision_id": self.decision_id,
+            "proposal_id": self.proposal_id,
+            "proposal_hash": self.proposal_hash,
+            "user_id": self.user_id,
+            "display": self.display,
+            "challenge": self.challenge,
+            "status": self.status,
+            "response_signature": self.response_signature,
+            "responded_at": resp.isoformat() if resp else None,
+            "expires_at": exp.isoformat() if exp else None,
+        }
+
