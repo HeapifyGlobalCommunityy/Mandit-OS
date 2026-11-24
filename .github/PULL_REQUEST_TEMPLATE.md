@@ -1,5 +1,5 @@
 <!--
-Pull requests must target the `develop` branch.
+Pull requests must target the `main` branch.
 Title format (Conventional Commits): <type>(<scope>): <summary>
 Do not delete sections. Write "N/A" where a section does not apply.
 See CONTRIBUTING.md §8.

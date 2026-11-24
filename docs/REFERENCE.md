@@ -862,7 +862,7 @@ Until real implementations land, each team ships **stub implementations** of its
 
 | Window | Focus | Gate (exit criterion) |
 |---|---|---|
-| Weeks 1–2 | Threat model, schemas, interfaces, stubs, repository, CI, Compose, design note per module | **G1:** contracts in Section 14.1 merged to `develop`; every module has a reviewed design note; CI green |
+| Weeks 1–2 | Threat model, schemas, interfaces, stubs, repository, CI, Compose, design note per module | **G1:** contracts in Section 14.1 merged to `main`; every module has a reviewed design note; CI green |
 | Weeks 3–4 | Identity, mandates, mandate dashboard, mock merchant (honest), mock PSP (card), token service (basic), ledger skeleton, gateway skeleton | **G2:** happy path from agent registration to a tokenized mock payment, with ledger events |
 | Weeks 5–6 | Scanner, injection firewall, claim verification, calculator, rules-based policy, token binding and TOCTOU, malicious merchant fixtures | **G3:** the primary attack scenario is blocked before token issue, with evidence |
 | Weeks 7–8 | Trust Score, human confirmation, UPI-like flow, explanations, audit dashboard, replay, cloud deployment | **G4:** first complete end-to-end run of both demo scenarios; replay reproduces decisions |

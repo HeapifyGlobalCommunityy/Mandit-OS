@@ -29,7 +29,7 @@ Thank you for contributing to Mandit OS. This document defines how work is propo
 
 Mandit OS is developed by six teams working in parallel on interdependent modules. The rules below exist for three reasons:
 
-- to keep `develop` integrable at all times;
+- to keep `main` integrable at all times;
 - to make cross-team effects visible before they cause breakage;
 - to keep the documentation an accurate description of the system.
 
@@ -69,7 +69,6 @@ Every contributor runs their **own local database**. Databases are never committ
 ```bash
 git clone https://github.com/HeapifyGlobalCommunityy/Mandit-OS.git
 cd Mandit-OS
-git checkout develop
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env                    # contains DATABASE_URL and other synthetic, non-secret defaults
@@ -104,44 +103,39 @@ Install the hooks with `pre-commit install`. They run formatting, linting, a sec
 
 ## 5. Branching Model
 
-The repository uses a simplified Git Flow.
+The repository uses trunk-based development: `main` is the single integration branch. There is no `develop` branch.
 
 | Branch | Purpose | Who merges into it | Protection |
 |---|---|---|---|
-| `main` | Stable, demonstrable releases only. Every commit on `main` is a tagged release. | Release and hotfix branches only, by the technical lead | Protected; no direct pushes; CI must pass; 2 approvals |
-| `develop` | Integration branch. **All feature work targets `develop`.** | Pull requests from working branches | Protected; no direct pushes; CI must pass; reviews per §8.5 |
+| `main` | Integration branch. **All work targets `main`.** It must stay integrable at all times. | Pull requests from working branches | Protected; no direct pushes; CI must pass; reviews per §8.5 |
 | Working branches | One unit of work each (§6) | n/a | n/a |
-| `release/x.y.z` | Release stabilisation, cut from `develop` | Fixes only | Protected |
-| `hotfix/x.y.z-<desc>` | Urgent fix to a release, cut from `main` | n/a | n/a |
+| `release/x.y.z` | Release stabilisation, cut from `main` | Fixes only | Protected |
+| `hotfix/x.y.z-<desc>` | Urgent fix to a released version, cut from its `vX.Y.Z` tag | n/a | n/a |
 
 ```mermaid
 gitGraph
     commit id: "v0.1.0"
-    branch develop
-    checkout develop
     branch "feature/mandates/matching-function"
     commit id: "feat(mandates)"
-    checkout develop
+    checkout main
     merge "feature/mandates/matching-function"
     branch "bug/tokens/double-redeem-race"
     commit id: "fix(tokens)"
-    checkout develop
+    checkout main
     merge "bug/tokens/double-redeem-race"
     branch "release/0.2.0"
-    commit id: "chore(release)"
+    commit id: "chore(release)" tag: "v0.2.0"
     checkout main
-    merge "release/0.2.0" tag: "v0.2.0"
-    checkout develop
     merge "release/0.2.0"
 ```
 
 Rules:
 
-1. **Pull requests target `develop`, never `main`.** The only exceptions are release and hotfix branches, which the technical lead manages.
-2. Create working branches from the latest `develop`.
-3. Keep your branch current by rebasing onto `develop` (`git fetch origin && git rebase origin/develop`). Do not merge `develop` into your branch.
+1. **Pull requests target `main`.**
+2. Create working branches from the latest `main`.
+3. Keep your branch current by rebasing onto `main` (`git fetch origin && git rebase origin/main`). Do not merge `main` into your branch.
 4. Delete working branches after merge.
-5. Hotfixes are merged into both `main` and `develop`.
+5. Fixes made on a `release/` or `hotfix/` branch are also merged into `main`.
 
 ## 6. Branch Naming
 
@@ -162,7 +156,7 @@ Only lowercase letters, digits, hyphens and the two `/` separators are permitted
 | Type | Use for |
 |---|---|
 | `feature/` | New functionality |
-| `bug/` | Defect fixes on `develop` |
+| `bug/` | Defect fixes on `main` |
 | `hotfix/` | Urgent fixes to a released version on `main` |
 | `security/` | Fixes for security weaknesses (see §13 and the [README Security section](README.md#security)) |
 | `docs/` | Documentation-only changes |
@@ -240,11 +234,11 @@ Breaking changes are marked with `!` after the scope and a `BREAKING CHANGE:` fo
 
 ### 8.1 Target branch
 
-**All pull requests target `develop`.** A pull request opened against `main` is closed without review, unless it comes from a `release/` or `hotfix/` branch opened by the technical lead.
+**All pull requests target `main`.** Pull requests into a `release/` branch are limited to fixes and are managed by the technical lead.
 
 ### 8.2 Before opening a pull request
 
-- [ ] The branch is rebased onto the latest `develop`.
+- [ ] The branch is rebased onto the latest `main`.
 - [ ] `make ci` passes locally.
 - [ ] New behaviour has tests (§12).
 - [ ] Documentation obligations are met (§10).
@@ -442,7 +436,7 @@ Writing standards: precise language; tables for specifications; examples are val
 | Security fix or new defence | At least one attack corpus case in `redteam/corpus/` that fails before the fix and passes after it |
 | UI flow | Playwright test for the primary path |
 
-Coverage targets: 90% line coverage for `identity`, `mandates`, `policy`, `tokens`, `payments` and `evidence`; 80% elsewhere. Coverage must not decrease on `develop`.
+Coverage targets: 90% line coverage for `identity`, `mandates`, `policy`, `tokens`, `payments` and `evidence`; 80% elsewhere. Coverage must not decrease on `main`.
 
 ## 13. Security-Sensitive Changes
 
@@ -480,7 +474,7 @@ Every issue has one type label, at least one team label, and a priority.
 
 A change is done only when all of the following hold. This extends the brief, §12.4.
 
-- [ ] Code is merged to `develop` after the required reviews.
+- [ ] Code is merged to `main` after the required reviews.
 - [ ] All tests pass in CI, including the scripted red-team corpus.
 - [ ] Decisions and state changes are written to the Evidence Ledger with registered events.
 - [ ] Every documentation obligation in §10 is met.
@@ -489,10 +483,10 @@ A change is done only when all of the following hold. This extends the brief, §
 
 ## 16. Release Process
 
-1. The technical lead cuts `release/x.y.z` from `develop` at each integration gate (G2 → `0.2.0`, G3 → `0.3.0`, G4 → `0.4.0`, G5 → `0.5.0`, G6 → `1.0.0`).
+1. The technical lead cuts `release/x.y.z` from `main` at each integration gate (G2 → `0.2.0`, G3 → `0.3.0`, G4 → `0.4.0`, G5 → `0.5.0`, G6 → `1.0.0`).
 2. Only fixes are merged into the release branch.
 3. Release notes are written in the GitHub release.
-4. The release branch is merged into `main`, tagged `vX.Y.Z`, and merged back into `develop`.
+4. The release branch is tagged `vX.Y.Z` and merged back into `main`.
 5. The evaluation results for the release are appended to `module 06 §12`.
 
 Versioning follows [Semantic Versioning 2.0.0](https://semver.org/).
