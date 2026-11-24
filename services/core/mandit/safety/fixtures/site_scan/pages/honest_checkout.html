@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><title>Checkout | Croma (demo)</title></head>
+<body>
+  <h1>Checkout</h1>
+  <p>Total: ₹76,499.00</p>
+  <form id="payment-form" action="/v1/checkout/pay" method="post">
+    <input name="cc-number" autocomplete="cc-number" placeholder="Card number">
+    <input name="cc-csc" autocomplete="cc-csc" placeholder="CVV">
+    <button type="submit">Pay ₹76,499.00</button>
+  </form>
+  <!-- Card widget served from the merchant's own payment subdomain -->
+  <iframe src="https://pay.croma.mock.mandit.local/card-widget" title="Secure card payment"></iframe>
+  <a href="upi://pay?pa=croma.demo@mockbank&amp;pn=Croma%20Demo&amp;am=76499.00&amp;cu=INR">Pay with UPI</a>
+</body></html>

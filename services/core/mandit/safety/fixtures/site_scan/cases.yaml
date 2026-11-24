@@ -1,0 +1,140 @@
+# Prewritten site-scan examples. Each case is run by the tests and by
+#   python -m mandit.safety.site_scan.examples          (from services/core)
+#
+# Fields:
+#   url       page URL being scanned
+#   page      HTML file under pages/ (omit for a domain-only scan)
+#   profile   local | test | demo | cloud   (default: test)
+#   tls       fixed TLS probe result for the host (omit = probe fails closed)
+#   disabled  signal codes switched off for this run (ablation)
+#   expect    codes (exact set, in any order), level, and optionally score
+#
+# Scores use the Phase 1 weights in config/site-scan-1.0.0.yaml.
+today: 2026-11-24
+
+cases:
+  # ---- Honest merchant: no signals (false-positive guards) ---------------------------------
+  - id: honest_product_local_http
+    description: Registered merchant over plain HTTP in the local profile (mock services).
+    url: http://croma.mock.mandit.local/storefront/p/ASUS-TUF-A15-16-512
+    page: honest_product.html
+    profile: local
+    expect: { codes: [], level: LOW, score: 0.0 }
+
+  - id: honest_checkout_https
+    description: Card form, card iframe and UPI payee all belong to the merchant.
+    url: https://croma.mock.mandit.local/checkout
+    page: honest_checkout.html
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [], level: LOW, score: 0.0 }
+
+  - id: honest_third_party_widgets
+    description: Search, video and newsletter forms on other domains are not payment targets.
+    url: https://croma.mock.mandit.local/storefront/p/ASUS-TUF-A15-16-512
+    page: honest_third_party_widgets.html
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [], level: LOW, score: 0.0 }
+
+  - id: honest_second_domain_of_merchant
+    description: A merchant may own several domains; its second domain is not a look-alike.
+    url: https://rdpay.mock.mandit.local/checkout
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 200 }
+    expect: { codes: [], level: LOW, score: 0.0 }
+
+  # ---- Fake shops -----------------------------------------------------------------------------
+  - id: fake_shop_checkout
+    description: New unregistered shop whose card form, iframe and UPI link go to an attacker.
+    url: https://fastlaptopdeals.example.com/checkout
+    page: fake_checkout.html
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 89 }
+    expect:
+      codes: [DOMAIN_NOT_IN_REGISTRY, DOMAIN_NEW, CHECKOUT_PAYEE_MISMATCH, EXTERNAL_PAYMENT_IFRAME]
+      level: HIGH
+      score: 0.95
+
+  - id: fake_shop_domain_only
+    description: Same shop scanned without HTML (e.g. a search result) - domain signals only.
+    url: https://fastlaptopdeals.example.com/p/laptop-x
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 89 }
+    expect: { codes: [DOMAIN_NOT_IN_REGISTRY, DOMAIN_NEW], level: MEDIUM, score: 0.5 }
+
+  - id: fake_shop_ablation
+    description: Checkout detectors switched off, as in a Team 6 ablation run.
+    url: https://fastlaptopdeals.example.com/checkout
+    page: fake_checkout.html
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 89 }
+    disabled: [CHECKOUT_PAYEE_MISMATCH, EXTERNAL_PAYMENT_IFRAME]
+    expect: { codes: [DOMAIN_NOT_IN_REGISTRY, DOMAIN_NEW], level: MEDIUM, score: 0.5 }
+
+  - id: bad_reputation
+    description: Subdomain of a domain with BAD reputation.
+    url: https://shop.scamdeals.example/deals
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 30 }
+    expect: { codes: [DOMAIN_NOT_IN_REGISTRY, DOMAIN_REPUTATION_BAD], level: HIGH, score: 0.8 }
+
+  # ---- Look-alike domains --------------------------------------------------------------------
+  - id: lookalike_digit_substitution
+    description: The label cr0ma uses a zero instead of the letter o.
+    url: https://cr0ma.mock.mandit.local/storefront/p/ASUS-TUF-A15-16-512
+    page: honest_product.html
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [DOMAIN_NOT_IN_REGISTRY, DOMAIN_LOOKALIKE], level: HIGH, score: 0.65 }
+
+  - id: lookalike_transposition
+    description: The label corma has two adjacent letters swapped.
+    url: https://corma.mock.mandit.local/
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [DOMAIN_NOT_IN_REGISTRY, DOMAIN_LOOKALIKE], level: HIGH, score: 0.65 }
+
+  - id: lookalike_cyrillic_homoglyph
+    description: First letter is Cyrillic "с" (U+0441); renders identically to the real domain.
+    url: https://сroma.mock.mandit.local/checkout
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [DOMAIN_NOT_IN_REGISTRY, DOMAIN_LOOKALIKE], level: HIGH, score: 0.65 }
+
+  - id: lookalike_brand_on_other_domain
+    description: The brand label "croma" used on an unrelated domain.
+    url: https://croma-offers.example/diwali-sale
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [DOMAIN_NOT_IN_REGISTRY, DOMAIN_LOOKALIKE], level: HIGH, score: 0.65 }
+
+  - id: lookalike_registered_domain_as_prefix
+    description: The full registered domain used as a prefix of an attacker domain.
+    url: https://croma.mock.mandit.local.verify-order.example/checkout
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [DOMAIN_NOT_IN_REGISTRY, DOMAIN_LOOKALIKE], level: HIGH, score: 0.65 }
+
+  # ---- Registered merchant, tampered checkout -------------------------------------------------
+  - id: compromised_merchant_upi_payee
+    description: Registered merchant page carrying a UPI link to a payee it does not own.
+    url: https://croma.mock.mandit.local/checkout
+    page: compromised_merchant_checkout.html
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [CHECKOUT_PAYEE_MISMATCH], level: MEDIUM, score: 0.3 }
+
+  - id: compromised_merchant_base_href
+    description: A <base href> silently redirects the relative payment form action off-site.
+    url: https://croma.mock.mandit.local/checkout
+    page: base_href_hijack.html
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [CHECKOUT_PAYEE_MISMATCH], level: MEDIUM, score: 0.3 }
+
+  # ---- Transport and registry status ----------------------------------------------------------
+  - id: expired_certificate
+    description: Registered merchant serving an expired certificate.
+    url: https://reliancedigital.mock.mandit.local/
+    tls: { valid: false, issuer: Demo CA, days_to_expiry: -3, error: certificate expired }
+    expect: { codes: [TLS_INVALID], level: LOW, score: 0.2 }
+
+  - id: plain_http_in_demo_profile
+    description: Plain HTTP is only tolerated in the local profile.
+    url: http://croma.mock.mandit.local/checkout
+    page: honest_checkout.html
+    profile: demo
+    expect: { codes: [NO_TLS], level: LOW, score: 0.2 }
+
+  - id: suspended_merchant
+    description: Domain belongs to a merchant whose registry status is SUSPENDED.
+    url: https://oldshop.mock.mandit.local/
+    tls: { valid: true, issuer: Demo CA, days_to_expiry: 80 }
+    expect: { codes: [DOMAIN_NOT_IN_REGISTRY], level: MEDIUM, score: 0.4 }

@@ -1,0 +1,14 @@
+# Synthetic merchant registry used by the site-scan examples and tests (shape: modules/03 section 5).
+merchants:
+  - merchant_id: mer_croma_demo
+    domains: [croma.mock.mandit.local]
+    payees: { upi_vpas: [croma.demo@mockbank] }
+    status: VERIFIED
+  - merchant_id: mer_reliance_demo
+    domains: [reliancedigital.mock.mandit.local, rdpay.mock.mandit.local]
+    payees: { upi_vpas: [reliance.demo@mockbank] }
+    status: VERIFIED
+  - merchant_id: mer_oldshop_demo
+    domains: [oldshop.mock.mandit.local]
+    payees: { upi_vpas: [oldshop.demo@mockbank] }
+    status: SUSPENDED
