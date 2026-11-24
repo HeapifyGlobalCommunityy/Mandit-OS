@@ -3,7 +3,8 @@
 Provides DB operations using SQLAlchemy sessions conforming to migration 0004.
 """
 from typing import Any
-from sqlalchemy import select
+from datetime import datetime
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,3 +70,39 @@ class DecisionRepository:
         stmt = select(ConfirmationModel).where(ConfirmationModel.confirmation_id == confirmation_id)
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def update_confirmation_status_cas(
+        self,
+        session: Any,
+        confirmation_id: str,
+        expected_status: str,
+        new_status: str,
+        response_signature: dict[str, Any] | None = None,
+        responded_at: datetime | None = None,
+    ) -> bool:
+        """Atomically transition confirmation status using CAS.
+
+        Returns True if transition succeeded, False if row was not in expected_status or did not exist.
+        """
+        values: dict[str, Any] = {"status": new_status}
+        if response_signature is not None:
+            values["response_signature"] = response_signature
+        if responded_at is not None:
+            values["responded_at"] = responded_at
+
+        stmt = (
+            update(ConfirmationModel)
+            .where(
+                ConfirmationModel.confirmation_id == confirmation_id,
+                ConfirmationModel.status == expected_status,
+            )
+            .values(**values)
+        )
+        res = session.execute(stmt)
+        if hasattr(res, "__await__"):
+            res = await res
+        if hasattr(session, "flush"):
+            fl = session.flush()
+            if hasattr(fl, "__await__"):
+                await fl
+        return bool(res.rowcount > 0)

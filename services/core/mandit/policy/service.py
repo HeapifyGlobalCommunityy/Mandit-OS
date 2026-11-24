@@ -16,6 +16,7 @@ from mandit.policy.repository import DecisionRepository
 from mandit.policy.rules import ALL_HARD_GATES, ALL_STEP_UP_RULES
 from mandit.policy.schemas import (
     OUTCOME_SEVERITY,
+    ConfirmationSnapshot,
     Decision,
     DecisionOutcome,
     DecisionResult,
@@ -364,7 +365,6 @@ class DecisionServiceImpl:
             display = build_display_payload(inputs, result.rules_fired)
             challenge = hashing.digest({
                 "confirmation_id": confirmation_id,
-                "decision_id": decision_id,
                 "display": display,
                 "expires_at": expires_at.isoformat(),
                 "proposal_hash": inputs.proposal_hash,
@@ -578,8 +578,16 @@ class DecisionServiceImpl:
                     return await self._evaluate_with_session(proposal_id, sess)
         return await self._evaluate_with_session(proposal_id, session)
 
-    async def _evaluate_with_session(self, proposal_id: str, session: Any) -> Decision:
-        evaluated_at = datetime.now(timezone.utc)
+    async def build_inputs(
+        self,
+        proposal_id: str,
+        session: Any = None,
+        confirmation: ConfirmationSnapshot | None = None,
+        evaluated_at: datetime | None = None,
+    ) -> FrozenDecisionInputs:
+        """Gather all cross-team inputs required for policy evaluation."""
+        if evaluated_at is None:
+            evaluated_at = datetime.now(timezone.utc)
 
         if self.grounding_service is None:
             raise ValueError("GroundingService is required to evaluate proposals")
@@ -611,7 +619,7 @@ class DecisionServiceImpl:
             elif hasattr(self.identity_service, "get_agent"):
                 agent = await self.identity_service.get_agent(agent_id)
                 from mandit.policy.schemas import IdentityResult
-                identity = IdentityResult(agent=agent, kya_valid=True, status="ACTIVE")
+                identity = IdentityResult(agent=agent, is_active=True, operator_verified=True, kya_token_valid=True, key_bound=True)
             else:
                 identity = await self.identity_service.get(agent_id)
         else:
@@ -641,11 +649,10 @@ class DecisionServiceImpl:
             elif hasattr(self.user_history_service, "get"):
                 user_history = await self.user_history_service.get(user_id, merchant_id)
 
-        confirmation = None
-        if hasattr(self, "get_confirmation_for_proposal"):
+        if confirmation is None and hasattr(self, "get_confirmation_for_proposal"):
             confirmation = await self.get_confirmation_for_proposal(session, proposal_id)
 
-        inputs = FrozenDecisionInputs(
+        return FrozenDecisionInputs(
             evaluated_at=evaluated_at,
             attempt=1,
             proposal_id=proposal_id,
@@ -660,6 +667,8 @@ class DecisionServiceImpl:
             confirmation=confirmation,
         )
 
+    async def _evaluate_with_session(self, proposal_id: str, session: Any) -> Decision:
+        inputs = await self.build_inputs(proposal_id, session=session)
         return await self.evaluate_with_inputs(inputs, session=session)
 
     async def get(self, decision_id: str, session: Any = None) -> Decision | None:

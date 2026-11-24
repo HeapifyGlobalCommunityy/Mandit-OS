@@ -7,7 +7,9 @@ Per docs/REFERENCE.md §8 and §11:
 """
 import base64
 from typing import Any
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, utils
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from mandit.common import hashing, jcs
 
 MANDIT_POLICY_KEY_ID = "mandit-policy-2026-11"
@@ -22,6 +24,55 @@ def b64url_decode(data: str) -> bytes:
     if pad:
         data += "=" * (4 - pad)
     return base64.urlsafe_b64decode(data.encode("ascii"))
+
+
+def load_es256_public_key_from_jwk(jwk: dict[str, Any]) -> ec.EllipticCurvePublicKey:
+    """Load an ECDSA P-256 public key from a JWK dict."""
+    if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256":
+        raise ValueError(f"Invalid JWK: expected kty='EC', crv='P-256', got {jwk}")
+    x_bytes = b64url_decode(jwk["x"])
+    y_bytes = b64url_decode(jwk["y"])
+    x_int = int.from_bytes(x_bytes, "big")
+    y_int = int.from_bytes(y_bytes, "big")
+    point = ec.EllipticCurvePublicNumbers(x_int, y_int, ec.SECP256R1())
+    return point.public_key()
+
+
+def parse_es256_signature(sig_bytes: bytes) -> bytes:
+    """Convert raw 64-byte (r || s) signature to ASN.1/DER if needed."""
+    if len(sig_bytes) == 64:
+        r = int.from_bytes(sig_bytes[:32], "big")
+        s = int.from_bytes(sig_bytes[32:], "big")
+        return encode_dss_signature(r, s)
+    return sig_bytes
+
+
+def verify_es256_signature(
+    public_key: ec.EllipticCurvePublicKey,
+    signature_envelope: dict[str, Any],
+    challenge: str,
+) -> bool:
+    """Verify an ES256 user signature envelope over the exact challenge string.
+
+    Per REFERENCE §7.4:
+    - alg must be 'ES256'
+    - signed_digest must equal challenge
+    - Verified using ECDSA P-256 with single SHA-256 over challenge.encode('utf-8')
+    """
+    if signature_envelope.get("alg") != "ES256":
+        return False
+    if signature_envelope.get("signed_digest") != challenge:
+        return False
+    val = signature_envelope.get("value")
+    if not val or not isinstance(val, str):
+        return False
+    try:
+        sig_bytes = b64url_decode(val)
+        der_sig = parse_es256_signature(sig_bytes)
+        public_key.verify(der_sig, challenge.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
+        return True
+    except Exception:
+        return False
 
 
 class Ed25519Signer:

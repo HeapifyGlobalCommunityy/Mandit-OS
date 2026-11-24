@@ -329,10 +329,9 @@ def test_step_up_evaluation_and_confirmation_row_creation(db_session, signer, ba
         assert conf_model.response_signature is None
         assert (conf_model.expires_at.replace(tzinfo=timezone.utc) if conf_model.expires_at.tzinfo is None else conf_model.expires_at) == decision.expires_at
 
-        # 3. Verify Challenge computation: sha256(JCS({display, proposal_hash, expires_at, confirmation_id}))
+        # 3. Verify Challenge computation: strictly sha256(JCS({display, proposal_hash, expires_at, confirmation_id}))
         expected_challenge = hashing.digest({
             "confirmation_id": decision.confirmation_id,
-            "decision_id": decision.decision_id,
             "display": conf_model.display,
             "expires_at": decision.expires_at.isoformat(),
             "proposal_hash": base_inputs.proposal_hash,

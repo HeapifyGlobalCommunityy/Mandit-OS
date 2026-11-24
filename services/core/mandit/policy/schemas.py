@@ -468,13 +468,8 @@ def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
         "confirmation": (
             {
                 "confirmation_id": inputs.confirmation.confirmation_id,
-                "decision_id": inputs.confirmation.decision_id,
-                "proposal_id": inputs.confirmation.proposal_id,
-                "proposal_hash": inputs.confirmation.proposal_hash,
-                "user_id": inputs.confirmation.user_id,
-                "display": inputs.confirmation.display,
-                "challenge": inputs.confirmation.challenge,
                 "status": inputs.confirmation.status,
+                "proposal_hash": inputs.confirmation.proposal_hash,
                 "expires_at": inputs.confirmation.expires_at.isoformat(),
                 "response_signature": inputs.confirmation.response_signature,
                 "signature_verified": inputs.confirmation.signature_verified,
