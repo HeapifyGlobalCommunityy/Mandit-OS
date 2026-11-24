@@ -77,7 +77,7 @@ def create_sample_inputs(
         max_amount_per_txn_minor=8000000,
         max_amount_total_minor=10000000,
         max_txn_count=5,
-        approval_threshold_minor=5000000,
+        approval_threshold_minor=7000000,
     )
 
     mandate = MandateSnapshot(

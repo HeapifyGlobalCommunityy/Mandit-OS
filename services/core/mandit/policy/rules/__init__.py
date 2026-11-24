@@ -1,4 +1,4 @@
-"""Registry and export of all Mandit OS Hard Gates (HG-01 to HG-16)."""
+"""Registry and export of all Mandit OS Hard Gates (HG-01..16) and Step-Up Rules (SU-01..07)."""
 from mandit.policy.rules.financial_gates import (
     HG06CurrencyGate,
     HG07PerTxnCapGate,
@@ -19,6 +19,15 @@ from mandit.policy.rules.merchant_gates import (
 from mandit.policy.rules.safety_gates import (
     HG14PromptInjectionGate,
     HG15SiteRiskGate,
+)
+from mandit.policy.rules.step_up_rules import (
+    SU01ApprovalThresholdRule,
+    SU02NewMerchantRule,
+    SU03MediumSiteRiskRule,
+    SU04MediumInjectionRule,
+    SU05PriceUnverifiedRule,
+    SU06TermsUnverifiedRule,
+    SU07PricierAlternativeRule,
 )
 from mandit.policy.rules.terms_gates import (
     HG11LineTypeAndCategoryGate,
@@ -46,7 +55,19 @@ ALL_HARD_GATES = (
     HG16DeliveryAndReturnsGate(),
 )
 
+# Canonical ordering of all 7 Step-Up Rules per REFERENCE §11.2
+ALL_STEP_UP_RULES = (
+    SU01ApprovalThresholdRule(),
+    SU02NewMerchantRule(),
+    SU03MediumSiteRiskRule(),
+    SU04MediumInjectionRule(),
+    SU05PriceUnverifiedRule(),
+    SU06TermsUnverifiedRule(),
+    SU07PricierAlternativeRule(),
+)
+
 __all__ = [
+    # Hard Gates
     "ALL_HARD_GATES",
     "HG01AgentIdentityGate",
     "HG02MandateValidityGate",
@@ -64,4 +85,13 @@ __all__ = [
     "HG14PromptInjectionGate",
     "HG15SiteRiskGate",
     "HG16DeliveryAndReturnsGate",
+    # Step-Up Rules
+    "ALL_STEP_UP_RULES",
+    "SU01ApprovalThresholdRule",
+    "SU02NewMerchantRule",
+    "SU03MediumSiteRiskRule",
+    "SU04MediumInjectionRule",
+    "SU05PriceUnverifiedRule",
+    "SU06TermsUnverifiedRule",
+    "SU07PricierAlternativeRule",
 ]

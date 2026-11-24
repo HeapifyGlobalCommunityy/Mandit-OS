@@ -4,7 +4,7 @@ Contains the pure decision evaluation pipeline and DefaultPolicyEngine.
 Strictly adheres to Invariant INV-11 (pure function, no I/O, no clock reads).
 """
 from mandit.policy.interface import PolicyRule
-from mandit.policy.rules import ALL_HARD_GATES
+from mandit.policy.rules import ALL_HARD_GATES, ALL_STEP_UP_RULES
 from mandit.policy.schemas import (
     OUTCOME_SEVERITY,
     DecisionOutcome,
@@ -20,7 +20,7 @@ DEFAULT_POLICY_VERSION = "policy-1.0.0"
 def decide(
     inputs: FrozenDecisionInputs,
     hard_gates: tuple[PolicyRule, ...] = ALL_HARD_GATES,
-    step_up_rules: tuple[PolicyRule, ...] = (),
+    step_up_rules: tuple[PolicyRule, ...] = ALL_STEP_UP_RULES,
 ) -> DecisionResult:
     """Evaluate policy against frozen decision inputs.
 
@@ -56,7 +56,7 @@ def decide(
             trust_score=None,
         )
 
-    # Stage 2: Step-up rules (SU-01 to SU-07)
+    # Stage 2: Step-up rules (SU-01 to SU-07). All evaluated, all recorded.
     for rule in step_up_rules:
         hit = rule.evaluate(inputs)
         if hit is not None:
@@ -108,7 +108,7 @@ def decide(
             )
         )
 
-    # Determine candidate outcome based on highest severity
+    # Determine candidate outcome based on highest severity: BLOCK (3) > RETRIEVE_MORE (2) > STEP_UP (1) > ALLOW (0)
     highest_effect = max(
         [h.effect for h in fired] + [band_outcome],
         key=lambda effect: OUTCOME_SEVERITY[effect],
@@ -130,6 +130,8 @@ def decide(
     # Determine stage for non-confirmation outcome
     if highest_effect == DecisionOutcome.BLOCK:
         stage = EvaluationStage.TRUST_SCORE
+    elif highest_effect == DecisionOutcome.RETRIEVE_MORE:
+        stage = EvaluationStage.TRUST_SCORE
     elif any(h.rule_id.startswith("SU") for h in fired):
         stage = EvaluationStage.RULE
     else:
@@ -149,7 +151,7 @@ class DefaultPolicyEngine:
     def __init__(
         self,
         hard_gates: tuple[PolicyRule, ...] = ALL_HARD_GATES,
-        step_up_rules: tuple[PolicyRule, ...] = (),
+        step_up_rules: tuple[PolicyRule, ...] = ALL_STEP_UP_RULES,
         version: str = DEFAULT_POLICY_VERSION,
     ) -> None:
         self.hard_gates = hard_gates
