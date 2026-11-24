@@ -245,7 +245,7 @@ Breaking changes are marked with `!` after the scope and a `BREAKING CHANGE:` fo
 ### 8.2 Before opening a pull request
 
 - [ ] The branch is rebased onto the latest `develop`.
-- [ ] `make lint test` passes locally.
+- [ ] `make ci` passes locally.
 - [ ] New behaviour has tests (§12).
 - [ ] Documentation obligations are met (§10).
 - [ ] No secrets, real personal data or real payment data are included.
@@ -308,18 +308,23 @@ Authors resolve a conversation only after addressing it. Reviewers re-approve af
 
 ### 8.6 Continuous integration
 
-A pull request can be merged only when all required checks pass:
+A pull request can be merged only when all required checks pass. Checks run in GitHub Actions
+(`.github/workflows/ci.yml`) on every pull request into `main` and every push to `main`. Each check
+calls a `make` target, so the same command reproduces it locally.
 
-| Check | Description |
-|---|---|
-| `lint` | Ruff, mypy (strict for `common/`, `policy/`, `tokens/`), ESLint, Prettier, `tsc --noEmit` |
-| `test-unit` | pytest and Vitest |
-| `test-integration` | Compose-based integration suite |
-| `redteam-scripted` | Scripted attack corpus; any HIGH-severity regression fails |
-| `contracts` | Schema validation; `interface.py` import-linter rules; generated types up to date |
-| `docs-registry` | Every emitted event and code is registered; every code has an explanation template; links resolve |
-| `secrets` | gitleaks |
-| `migrations` | Alembic migrations apply and roll back cleanly |
+| Check | Description | Status | Run locally |
+|---|---|---|---|
+| `lint` | Ruff (lint and format), mypy (strict for `common/`, `policy/`, `tokens/`); ESLint, Prettier, `tsc --noEmit` once the console exists | **Active** (Python only) | `make lint` |
+| `test-unit` | pytest (every module must import; per-module tests under `services/core/tests/`); Vitest once the console exists | **Active** (pytest only) | `make test` |
+| `test-integration` | Compose-based integration suite | Planned (needs Compose) | n/a |
+| `redteam-scripted` | Scripted attack corpus; any HIGH-severity regression fails | Planned (needs corpus) | n/a |
+| `contracts` | Schema validation; `interface.py` import-linter rules; generated types up to date | Planned | n/a |
+| `docs-registry` | Every emitted event and code is registered; every code has an explanation template; links resolve | Planned | n/a |
+| `secrets` | gitleaks over the full git history | **Active** | `make secrets` (Docker) |
+| `migrations` | Alembic migrations apply to an empty Postgres 16, roll back to base leaving nothing behind, and re-apply to an identical schema | **Active** | `make migrations` (empty DB at `DATABASE_URL`) |
+
+Run `make ci` (lint and unit tests) before opening a pull request. Repository administrators mark
+the active checks as required in the branch protection rule for `main`.
 
 ### 8.7 Merging
 
