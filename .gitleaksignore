@@ -1,4 +1,5 @@
 # Gitleaks ignore file
-# False positive: python type annotation `ed25519.Ed25519PrivateKey` in commit cd978c3
+# False positive: python type annotation `ed25519.Ed25519PrivateKey` in historical commits
 cd978c3e64c6a44551643d026f1c7e025b7326be:services/core/mandit/common/crypto.py:generic-api-key:32
 cd978c3e64c6a44551643d026f1c7e025b7326be:services/core/mandit/common/crypto.py:generic-api-key:124
+93bed593619a88c0607979a202b7803bd7082816:services/core/mandit/common/crypto.py:generic-api-key:126

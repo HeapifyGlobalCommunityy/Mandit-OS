@@ -123,10 +123,10 @@ class Ed25519Signer:
 
     def __init__(
         self,
-        key: ed25519.Ed25519PrivateKey | None = None,
+        signer: ed25519.Ed25519PrivateKey | None = None,
         key_id: str = MANDIT_POLICY_KEY_ID,
     ):
-        self.private_key = key or ed25519.Ed25519PrivateKey.generate()
+        self.private_key = signer or ed25519.Ed25519PrivateKey.generate()
         self.key_id = key_id
 
     @property
