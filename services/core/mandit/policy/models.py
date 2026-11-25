@@ -2,6 +2,7 @@
 
 Matches migration 0004_policy_and_payments.py exactly.
 """
+
 from datetime import datetime, timezone
 from typing import Any
 from sqlalchemy import (
@@ -27,14 +28,17 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def ensure_tz(dt: datetime | None) -> datetime | None:
-    if dt is not None and dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
+def ensure_tz(dt: Any) -> datetime | None:
+    if isinstance(dt, datetime):
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+    return None
 
 
 class DecisionModel(Base):
     """SQLAlchemy model for decisions table matching migration 0004."""
+
     __tablename__ = "decisions"
 
     decision_id = Column(Text, primary_key=True)
@@ -112,6 +116,7 @@ class DecisionModel(Base):
 
 class ConfirmationModel(Base):
     """SQLAlchemy model for confirmations table matching migration 0004."""
+
     __tablename__ = "confirmations"
 
     confirmation_id: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -142,4 +147,3 @@ class ConfirmationModel(Base):
             "responded_at": resp.isoformat() if resp else None,
             "expires_at": exp.isoformat() if exp else None,
         }
-
