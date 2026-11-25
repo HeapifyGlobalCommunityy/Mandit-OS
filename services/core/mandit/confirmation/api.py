@@ -1,8 +1,10 @@
-"""FastAPI router for Human Confirmation endpoints.
+"""FastAPI HTTP router for Human Confirmation endpoints.
 
 Per docs/modules/04-policy-and-payments.md §6.2.
 """
+
 from typing import Any
+
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from mandit.confirmation.interface import ConfirmationService, UserAuthService
@@ -20,32 +22,38 @@ from mandit.confirmation.schemas import (
     UserKeyInvalidError,
 )
 from mandit.confirmation.service import FailClosedUserAuthService
-from mandit.policy.models import ConfirmationModel
 
 router = APIRouter(prefix="/v1/confirmations", tags=["confirmations"])
 
-_default_user_auth_service: UserAuthService = FailClosedUserAuthService()
+# Singleton auth service instance: defaults to fail-closed unless overridden.
+_USER_AUTH_SERVICE: UserAuthService = FailClosedUserAuthService()
+
+
+def set_user_auth_service(service: UserAuthService) -> None:
+    """Configure the active UserAuthService for session verification."""
+    global _USER_AUTH_SERVICE
+    _USER_AUTH_SERVICE = service
 
 
 def get_user_auth_service() -> UserAuthService:
-    """Dependency provider for UserAuthService."""
-    return _default_user_auth_service
-
-
-def set_user_auth_service(auth_service: UserAuthService) -> None:
-    """Set global fallback UserAuthService."""
-    global _default_user_auth_service
-    _default_user_auth_service = auth_service
+    """Dependency provider returning the configured UserAuthService."""
+    return _USER_AUTH_SERVICE
 
 
 def get_confirmation_service() -> ConfirmationService:
-    """Dependency provider for ConfirmationService."""
-    raise NotImplementedError("ConfirmationService dependency provider not configured")
+    """Dependency provider for ConfirmationService.
+
+    Should be overridden in production application setup or test dependency_overrides.
+    """
+    raise NotImplementedError("ConfirmationService dependency must be registered")
 
 
 def get_db_session() -> Any:
-    """Dependency provider for database session."""
-    raise NotImplementedError("Database session dependency provider not configured")
+    """Dependency provider for the transactional database session.
+
+    Should be overridden in production application setup or test dependency_overrides.
+    """
+    raise NotImplementedError("Database session dependency must be registered")
 
 
 async def get_current_user_id(
@@ -65,12 +73,15 @@ async def get_current_user_id(
     try:
         return await auth_service.authenticate_user(authorization)
     except AuthenticationError as e:
-        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message})
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "message": e.message},
+        ) from e
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "UNAUTHORIZED", "message": f"Authentication failed: {e}"},
-        )
+        ) from e
 
 
 @router.post("/{confirmation_id}/respond", status_code=status.HTTP_200_OK)
@@ -86,7 +97,10 @@ async def respond_to_confirmation(
     if req_response not in ("APPROVE", "REJECT"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"code": "INVALID_RESPONSE_TYPE", "message": "response must be 'APPROVE' or 'REJECT'"},
+            detail={
+                "code": "INVALID_RESPONSE_TYPE",
+                "message": "response must be 'APPROVE' or 'REJECT'",
+            },
         )
 
     req = ConfirmationRespondRequest(
@@ -103,15 +117,29 @@ async def respond_to_confirmation(
         )
         return res.to_dict()
     except ConfirmationNotFoundError as e:
-        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message})
+        raise HTTPException(
+            status_code=e.status_code, detail={"code": e.code, "message": e.message}
+        ) from e
     except (ConfirmationOwnershipError, UserKeyInvalidError) as e:
-        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message})
-    except (ConfirmationNotPendingError, ConfirmationExpiredError, ConfirmationInvalidatedError) as e:
-        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message})
+        raise HTTPException(
+            status_code=e.status_code, detail={"code": e.code, "message": e.message}
+        ) from e
+    except (
+        ConfirmationNotPendingError,
+        ConfirmationExpiredError,
+        ConfirmationInvalidatedError,
+    ) as e:
+        raise HTTPException(
+            status_code=e.status_code, detail={"code": e.code, "message": e.message}
+        ) from e
     except (ChallengeMismatchError, SignatureInvalidError) as e:
-        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message})
+        raise HTTPException(
+            status_code=e.status_code, detail={"code": e.code, "message": e.message}
+        ) from e
     except ConfirmationError as e:
-        raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": e.message})
+        raise HTTPException(
+            status_code=e.status_code, detail={"code": e.code, "message": e.message}
+        ) from e
 
 
 @router.get("/{confirmation_id}", status_code=status.HTTP_200_OK)
@@ -130,11 +158,17 @@ async def get_confirmation(
     if conf is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "CONFIRMATION_NOT_FOUND", "message": f"Confirmation {confirmation_id} not found"},
+            detail={
+                "code": "CONFIRMATION_NOT_FOUND",
+                "message": f"Confirmation {confirmation_id} not found",
+            },
         )
     if conf.user_id != caller_user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": "CONFIRMATION_OWNERSHIP_MISMATCH", "message": "User does not own this confirmation"},
+            detail={
+                "code": "CONFIRMATION_OWNERSHIP_MISMATCH",
+                "message": "User does not own this confirmation",
+            },
         )
     return conf.to_dict()

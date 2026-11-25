@@ -1,4 +1,5 @@
 """Mandit OS Human Confirmation Module."""
+
 from mandit.confirmation.interface import ConfirmationService, UserAuthService, UserKeyService
 from mandit.confirmation.models import ConfirmationModel, UserKeyModel
 from mandit.confirmation.schemas import (

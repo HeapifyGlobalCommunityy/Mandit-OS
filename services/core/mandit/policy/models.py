@@ -12,6 +12,7 @@ from sqlalchemy import (
     Numeric,
     Text,
 )
+from sqlalchemy.orm import Mapped, mapped_column
 
 from mandit.common.models import Base
 from mandit.policy.schemas import (
@@ -113,17 +114,17 @@ class ConfirmationModel(Base):
     """SQLAlchemy model for confirmations table matching migration 0004."""
     __tablename__ = "confirmations"
 
-    confirmation_id = Column(Text, primary_key=True)
-    decision_id = Column(Text, nullable=False)
-    proposal_id = Column(Text, nullable=False)
-    proposal_hash = Column(Text, nullable=False)
-    user_id = Column(Text, nullable=False)
-    display = Column(JSON, nullable=False)
-    challenge = Column(Text, nullable=False)
-    status = Column(Text, nullable=False)
-    response_signature = Column(JSON, nullable=True)
-    responded_at = Column(DateTime(timezone=True), nullable=True)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
+    confirmation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    decision_id: Mapped[str] = mapped_column(Text, nullable=False)
+    proposal_id: Mapped[str] = mapped_column(Text, nullable=False)
+    proposal_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    display: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    challenge: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    response_signature: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     def to_dict(self) -> dict[str, Any]:
         exp = ensure_tz(self.expires_at)

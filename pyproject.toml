@@ -11,6 +11,8 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # Migrations are hand-written SQL; long statement lines are expected.
 "services/core/migrations/versions/*.py" = ["E501"]
+# FastAPI dependency injection uses Depends in default parameter values.
+"**/api.py" = ["B008"]
 
 [tool.ruff.format]
 # Keep the hand-written SQL migrations exactly as their owners wrote them.

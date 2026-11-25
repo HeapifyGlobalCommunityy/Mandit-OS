@@ -1,13 +1,21 @@
 """Confirmation Service implementation adhering strictly to docs/modules/04 §6."""
-from datetime import datetime, timezone
-from typing import Any, Callable
+
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any, Literal
+
+from sqlalchemy import select
 
 from mandit.common import events
 from mandit.common.crypto import (
     load_es256_public_key_from_jwk,
     verify_es256_signature,
 )
-from mandit.confirmation.interface import ConfirmationService, UserAuthService, UserKeyService
+from mandit.confirmation.interface import (
+    ConfirmationService,
+    UserAuthService,
+    UserKeyService,
+)
 from mandit.confirmation.models import ConfirmationModel, UserKeyModel, ensure_tz
 from mandit.confirmation.schemas import (
     AuthenticationError,
@@ -26,7 +34,6 @@ from mandit.confirmation.schemas import (
 from mandit.policy.repository import DecisionRepository
 from mandit.policy.schemas import ConfirmationSnapshot
 from mandit.policy.service import DecisionServiceImpl
-from sqlalchemy import select
 
 
 class FailClosedUserAuthService(UserAuthService):
@@ -84,13 +91,16 @@ class DatabaseUserKeyService(UserKeyService):
         except Exception:
             return None
 
+        status_val: Literal["ACTIVE", "REVOKED"] = (
+            "ACTIVE" if model.status == "ACTIVE" else "REVOKED"
+        )
         return UserKeyRecord(
             key_id=model.key_id,
             user_id=model.user_id,
             alg=model.alg,
             jwk=model.jwk,
-            status=model.status,
-            created_at=ensure_tz(model.created_at) or datetime.now(timezone.utc),
+            status=status_val,
+            created_at=ensure_tz(model.created_at) or datetime.now(UTC),
         )
 
     async def get_active_key(self, user_id: str, session: Any = None) -> UserKeyRecord | None:
@@ -117,16 +127,19 @@ class DatabaseUserKeyService(UserKeyService):
             models = res.fetchall()
 
         for m in models:
-            row = m[0] if isinstance(m, tuple) else m
+            row: UserKeyModel = m[0] if isinstance(m, tuple) else m
             try:
                 load_es256_public_key_from_jwk(row.jwk)
+                row_status: Literal["ACTIVE", "REVOKED"] = (
+                    "ACTIVE" if row.status == "ACTIVE" else "REVOKED"
+                )
                 return UserKeyRecord(
                     key_id=row.key_id,
                     user_id=row.user_id,
                     alg=row.alg,
                     jwk=row.jwk,
-                    status=row.status,
-                    created_at=ensure_tz(row.created_at) or datetime.now(timezone.utc),
+                    status=row_status,
+                    created_at=ensure_tz(row.created_at) or datetime.now(UTC),
                 )
             except Exception:
                 continue
@@ -148,7 +161,7 @@ class ConfirmationServiceImpl(ConfirmationService):
         self.decision_service = decision_service
         self.grounding_service = grounding_service
         self.user_key_service = user_key_service
-        self.now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+        self.now_fn = now_fn or (lambda: datetime.now(UTC))
 
     async def get(
         self,
@@ -242,7 +255,10 @@ class ConfirmationServiceImpl(ConfirmationService):
             if conf.status == "EXPIRED":
                 raise ConfirmationExpiredError("Confirmation has expired")
             elif conf.status == "INVALIDATED":
-                raise ConfirmationInvalidatedError("Confirmation was invalidated", code="CONFIRMATION_INVALIDATED")
+                raise ConfirmationInvalidatedError(
+                    "Confirmation was invalidated",
+                    code="CONFIRMATION_INVALIDATED",
+                )
             raise ConfirmationNotPendingError(f"Confirmation is already {conf.status}")
 
         # Step 3: Confirmation must not be expired
@@ -269,18 +285,24 @@ class ConfirmationServiceImpl(ConfirmationService):
 
         # Step 4: Caller must own confirmation
         if conf.user_id != caller_user_id:
-            raise ConfirmationOwnershipError(f"User {caller_user_id} does not own confirmation {confirmation_id}")
+            raise ConfirmationOwnershipError(
+                f"User {caller_user_id} does not own confirmation {confirmation_id}"
+            )
 
         # Step 5: Handle REJECT
         if req.response == "REJECT":
             key_id: str | None = None
             if req.signature is not None:
                 if req.signature.get("signed_digest") != conf.challenge:
-                    raise ChallengeMismatchError("Signature signed_digest does not match stored challenge")
+                    raise ChallengeMismatchError(
+                        "Signature signed_digest does not match stored challenge"
+                    )
                 key_id = req.signature.get("key_id")
             elif self.user_key_service is not None:
                 try:
-                    active_key = await self.user_key_service.get_active_key(caller_user_id, session=session)
+                    active_key = await self.user_key_service.get_active_key(
+                        caller_user_id, session=session
+                    )
                 except TypeError:
                     active_key = await self.user_key_service.get_active_key(caller_user_id)
                 if active_key is not None:
@@ -295,7 +317,9 @@ class ConfirmationServiceImpl(ConfirmationService):
                 responded_at=now,
             )
             if not cas_ok:
-                raise ConfirmationNotPendingError("Confirmation already processed by a concurrent request")
+                raise ConfirmationNotPendingError(
+                    "Confirmation already processed by a concurrent request"
+                )
 
             await events.emit(
                 session,
@@ -345,13 +369,15 @@ class ConfirmationServiceImpl(ConfirmationService):
             or user_key.status != "ACTIVE"
             or user_key.alg != "ES256"
         ):
-            raise UserKeyInvalidError(f"Key {key_id} is invalid, revoked, or does not belong to user {caller_user_id}")
+            raise UserKeyInvalidError(
+                f"Key {key_id} is invalid, revoked, or does not belong to user {caller_user_id}"
+            )
 
         # ES256 verification
         try:
             public_key = load_es256_public_key_from_jwk(user_key.jwk)
         except Exception as exc:
-            raise UserKeyInvalidError(f"Malformed public key JWK: {exc}")
+            raise UserKeyInvalidError(f"Malformed public key JWK: {exc}") from exc
 
         if not verify_es256_signature(public_key, sig, conf.challenge):
             raise SignatureInvalidError("ES256 signature verification failed")
@@ -414,7 +440,9 @@ class ConfirmationServiceImpl(ConfirmationService):
             responded_at=now,
         )
         if not cas_ok:
-            raise ConfirmationNotPendingError("Confirmation already processed by a concurrent request")
+            raise ConfirmationNotPendingError(
+                "Confirmation already processed by a concurrent request"
+            )
 
         # Emit CONFIRMATION_APPROVED
         await events.emit(
@@ -448,11 +476,18 @@ class ConfirmationServiceImpl(ConfirmationService):
             confirmation=conf_snapshot,
             evaluated_at=now,
         )
-        new_decision = await self.decision_service.evaluate_with_inputs(re_eval_inputs, session=session)
+        new_decision = await self.decision_service.evaluate_with_inputs(
+            re_eval_inputs, session=session
+        )
 
+        outcome_val = (
+            new_decision.outcome.value
+            if hasattr(new_decision.outcome, "value")
+            else str(new_decision.outcome)
+        )
         return ConfirmationRespondResponse(
             confirmation_id=confirmation_id,
             status="APPROVED",
             decision_id=new_decision.decision_id,
-            outcome=new_decision.outcome.value if hasattr(new_decision.outcome, "value") else str(new_decision.outcome),
+            outcome=outcome_val,
         )

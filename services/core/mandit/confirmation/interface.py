@@ -1,4 +1,5 @@
 """Protocols and interfaces for Human Confirmation service."""
+
 from typing import Any, Protocol
 
 from mandit.confirmation.schemas import (
@@ -12,11 +13,11 @@ from mandit.policy.models import ConfirmationModel
 class UserKeyService(Protocol):
     """Protocol for accessing user signing keys (Team 1 contract)."""
 
-    async def get_key(self, key_id: str) -> UserKeyRecord | None:
+    async def get_key(self, key_id: str, session: Any = None) -> UserKeyRecord | None:
         """Retrieve user key record by key_id."""
         ...
 
-    async def get_active_key(self, user_id: str) -> UserKeyRecord | None:
+    async def get_active_key(self, user_id: str, session: Any = None) -> UserKeyRecord | None:
         """Retrieve active key for user_id."""
         ...
 

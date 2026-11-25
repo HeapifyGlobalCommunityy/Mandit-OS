@@ -2,14 +2,16 @@
 
 Per docs/modules/04-policy-and-payments.md §6 and REFERENCE.md §11.
 """
+
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 
-class ConfirmationStatus(str, Enum):
+class ConfirmationStatus(StrEnum):
     """Lifecycle status of a human confirmation request per migration 0004."""
+
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
@@ -20,6 +22,7 @@ class ConfirmationStatus(str, Enum):
 @dataclass(frozen=True)
 class SignatureEnvelope:
     """Canonical signature envelope per REFERENCE.md §8."""
+
     alg: str
     key_id: str
     signed_digest: str
@@ -37,6 +40,7 @@ class SignatureEnvelope:
 @dataclass(frozen=True)
 class ConfirmationRespondRequest:
     """Request payload for POST /v1/confirmations/{confirmation_id}/respond."""
+
     response: Literal["APPROVE", "REJECT"]
     signature: dict[str, Any] | None = None
 
@@ -44,6 +48,7 @@ class ConfirmationRespondRequest:
 @dataclass(frozen=True)
 class ConfirmationRespondResponse:
     """Response payload for POST /v1/confirmations/{confirmation_id}/respond."""
+
     confirmation_id: str
     status: str
     decision_id: str | None = None
@@ -61,6 +66,7 @@ class ConfirmationRespondResponse:
 @dataclass(frozen=True)
 class UserKeyRecord:
     """User key representation matching user_keys table per docs/modules/01 §4."""
+
     key_id: str
     user_id: str
     alg: str
@@ -71,8 +77,10 @@ class UserKeyRecord:
 
 # --- Domain Exceptions ---
 
+
 class ConfirmationError(Exception):
     """Base exception for confirmation failures."""
+
     code: str
     status_code: int = 400
 
@@ -104,7 +112,11 @@ class ConfirmationExpiredError(ConfirmationError):
 
 
 class ConfirmationInvalidatedError(ConfirmationError):
-    def __init__(self, message: str = "Confirmation has been invalidated", code: str = "CONFIRMATION_PROPOSAL_CHANGED"):
+    def __init__(
+        self,
+        message: str = "Confirmation has been invalidated",
+        code: str = "CONFIRMATION_PROPOSAL_CHANGED",
+    ):
         super().__init__(message, code=code, status_code=409)
 
 
@@ -119,10 +131,18 @@ class SignatureInvalidError(ConfirmationError):
 
 
 class UserKeyInvalidError(ConfirmationError):
-    def __init__(self, message: str = "User signing key is invalid or revoked", code: str = "USER_KEY_INVALID"):
+    def __init__(
+        self,
+        message: str = "User signing key is invalid or revoked",
+        code: str = "USER_KEY_INVALID",
+    ):
         super().__init__(message, code=code, status_code=403)
 
 
 class AuthenticationError(ConfirmationError):
-    def __init__(self, message: str = "Missing or invalid authentication credentials", code: str = "UNAUTHORIZED"):
+    def __init__(
+        self,
+        message: str = "Missing or invalid authentication credentials",
+        code: str = "UNAUTHORIZED",
+    ):
         super().__init__(message, code=code, status_code=401)

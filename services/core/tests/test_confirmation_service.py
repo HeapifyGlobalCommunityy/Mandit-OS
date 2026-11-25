@@ -77,10 +77,10 @@ class InMemoryUserKeyService:
     def add_key(self, key: UserKeyRecord) -> None:
         self.keys[key.key_id] = key
 
-    async def get_key(self, key_id: str) -> UserKeyRecord | None:
+    async def get_key(self, key_id: str, session: Any = None) -> UserKeyRecord | None:
         return self.keys.get(key_id)
 
-    async def get_active_key(self, user_id: str) -> UserKeyRecord | None:
+    async def get_active_key(self, user_id: str, session: Any = None) -> UserKeyRecord | None:
         for k in self.keys.values():
             if k.user_id == user_id and k.status == "ACTIVE":
                 return k
