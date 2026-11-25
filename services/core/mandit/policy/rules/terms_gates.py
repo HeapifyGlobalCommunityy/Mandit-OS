@@ -2,6 +2,7 @@
 
 Enforces Invariants INV-02 and INV-08.
 """
+
 from mandit.policy.schemas import DecisionOutcome, FrozenDecisionInputs, RuleHit
 
 
@@ -10,6 +11,7 @@ class HG11LineTypeAndCategoryGate:
 
     Invariant INV-02: Agent cannot purchase forbidden goods or service types.
     """
+
     rule_id: str = "HG-11"
     code: str = "FORBIDDEN_LINE_TYPE"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -37,10 +39,11 @@ class HG11LineTypeAndCategoryGate:
 
 
 class HG12CriticalClaimsGate:
-    """HG-12: A critical claim (product identity, payment amount, merchant legitimacy) is not VERIFIED.
+    """HG-12: A critical claim (product identity, amount, merchant) is not VERIFIED.
 
     Invariant INV-08: No decision may ALLOW an action whose critical facts are unverified.
     """
+
     rule_id: str = "HG-12"
     code: str = "CRITICAL_CLAIMS_UNVERIFIED"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -74,6 +77,7 @@ class HG16DeliveryAndReturnsGate:
 
     Invariant INV-02: Terms of sale must meet user's minimum requirements.
     """
+
     rule_id: str = "HG-16"
     code: str = "DELIVERY_REQUIREMENT_UNMET"
     effect: DecisionOutcome = DecisionOutcome.BLOCK

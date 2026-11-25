@@ -3,12 +3,13 @@
 Contains the pure decision evaluation pipeline, DefaultPolicyEngine, and DecisionServiceImpl.
 Strictly adheres to Invariant INV-11 (pure function, no I/O, no clock reads).
 """
-import dataclasses
-from datetime import datetime, timedelta, timezone
-from typing import Any
-import uuid
 
-from mandit.common import crypto, events, hashing
+import dataclasses
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
+
+from mandit.common import events, hashing
 from mandit.common.crypto import Ed25519Signer
 from mandit.policy.interface import PolicyEngine, PolicyRule
 from mandit.policy.models import ConfirmationModel, DecisionModel
@@ -45,8 +46,9 @@ def decide(
     Pipeline stages:
     1. Stage 1 (Hard Gates): Evaluate all hard gates. If ANY fails (BLOCK), return immediately.
     2. Stage 2 (Step-Up Rules): Evaluate advisory heuristics that flag transactions for user review.
-    3. Stage 3 (Trust Score Bands): Evaluate grounding trust score (ALLOW/STEP_UP/RETRIEVE_MORE/BLOCK).
-       Enforce that RETRIEVE_MORE is permitted only on attempt 1; attempt >= 2 escalates to STEP_UP.
+    3. Stage 3 (Trust Score Bands): Evaluate grounding trust score
+       (ALLOW/STEP_UP/RETRIEVE_MORE/BLOCK). Enforce that RETRIEVE_MORE is permitted only
+       on attempt 1; attempt >= 2 escalates to STEP_UP.
     4. Stage 4 (Confirmation): Human approval can resolve STEP_UP to ALLOW, but never overrides
        BLOCK or RETRIEVE_MORE (INV-07).
     """
@@ -120,7 +122,7 @@ def decide(
             )
         )
 
-    # Determine candidate outcome based on highest severity: BLOCK (3) > RETRIEVE_MORE (2) > STEP_UP (1) > ALLOW (0)
+    # Candidate outcome by severity: BLOCK (3) > RETRIEVE_MORE (2) > STEP_UP (1) > ALLOW (0)
     highest_effect = max(
         [h.effect for h in fired] + [band_outcome],
         key=lambda effect: OUTCOME_SEVERITY[effect],
@@ -179,10 +181,13 @@ class DefaultPolicyEngine:
         )
 
 
-def build_display_payload(inputs: FrozenDecisionInputs, rules_fired: tuple[RuleHit, ...]) -> dict[str, Any]:
+def build_display_payload(
+    inputs: FrozenDecisionInputs, rules_fired: tuple[RuleHit, ...]
+) -> dict[str, Any]:
     """Construct sanitized display payload for human confirmation per docs/modules/04 §6.1.
 
-    Built strictly from signed checkout, mandate, and policy decisions. Agent-supplied text is never used.
+    Built strictly from signed checkout, mandate, and policy decisions.
+    Agent-supplied text is never used.
     """
     checkout = inputs.verification.checkout
     calc = inputs.verification.calculation
@@ -190,34 +195,48 @@ def build_display_payload(inputs: FrozenDecisionInputs, rules_fired: tuple[RuleH
 
     for r in rules_fired:
         if r.rule_id == "SU-01":
-            reasons.append({
-                "code": "ABOVE_APPROVAL_THRESHOLD",
-                "template_id": "stepup.above_threshold",
-                "params": {"threshold_minor": inputs.mandate.constraints.approval_threshold_minor},
-            })
+            reasons.append(
+                {
+                    "code": "ABOVE_APPROVAL_THRESHOLD",
+                    "template_id": "stepup.above_threshold",
+                    "params": {
+                        "threshold_minor": inputs.mandate.constraints.approval_threshold_minor
+                    },
+                }
+            )
         elif r.rule_id == "SU-07":
-            reasons.append({
-                "code": "PRICIER_ALTERNATIVE_CHOSEN",
-                "template_id": "stepup.pricier_alternative",
-                "params": {
-                    "difference_minor": inputs.verification.selection.difference_minor or 0,
-                    "cheapest_matching_minor": inputs.verification.selection.cheapest_matching_minor,
-                },
-            })
+            reasons.append(
+                {
+                    "code": "PRICIER_ALTERNATIVE_CHOSEN",
+                    "template_id": "stepup.pricier_alternative",
+                    "params": {
+                        "difference_minor": inputs.verification.selection.difference_minor or 0,
+                        "cheapest_matching_minor": (
+                            inputs.verification.selection.cheapest_matching_minor
+                        ),
+                    },
+                }
+            )
         elif r.rule_id == "TS-02":
-            reasons.append({
-                "code": "RETRIEVE_MORE_EXHAUSTED",
-                "template_id": "stepup.retrieve_more_exhausted",
-                "params": {"attempt": inputs.attempt, "score": inputs.verification.trust.score},
-            })
+            reasons.append(
+                {
+                    "code": "RETRIEVE_MORE_EXHAUSTED",
+                    "template_id": "stepup.retrieve_more_exhausted",
+                    "params": {"attempt": inputs.attempt, "score": inputs.verification.trust.score},
+                }
+            )
         elif r.effect == DecisionOutcome.STEP_UP:
-            reasons.append({
-                "code": r.code,
-                "template_id": f"stepup.{r.code.lower()}",
-                "params": r.detail or {},
-            })
+            reasons.append(
+                {
+                    "code": r.code,
+                    "template_id": f"stepup.{r.code.lower()}",
+                    "params": r.detail or {},
+                }
+            )
 
-    tax_minor = max(0, calc.computed_total_minor - calc.subtotal_minor) if calc.subtotal_minor > 0 else 0
+    tax_minor = (
+        max(0, calc.computed_total_minor - calc.subtotal_minor) if calc.subtotal_minor > 0 else 0
+    )
     return {
         "merchant": {
             "merchant_id": checkout.merchant_id,
@@ -241,7 +260,7 @@ def build_display_payload(inputs: FrozenDecisionInputs, rules_fired: tuple[RuleH
 
 
 class DecisionServiceImpl:
-    """Production DecisionService implementing the evaluation pipeline, snapshotting, signing, and persistence."""
+    """Production DecisionService for evaluation, snapshotting, signing, persistence."""
 
     def __init__(
         self,
@@ -277,20 +296,26 @@ class DecisionServiceImpl:
                 kind="decision_inputs",
                 obj=inputs_dict,
             )
-            snapshot_id = getattr(snap, "snapshot_id", getattr(snap, "id", f"snp_{uuid.uuid4().hex}"))
-            digest = getattr(snap, "digest", getattr(snap, "inputs_hash", hashing.digest(inputs_dict)))
+            snapshot_id = getattr(
+                snap, "snapshot_id", getattr(snap, "id", f"snp_{uuid.uuid4().hex}")
+            )
+            digest = getattr(
+                snap, "digest", getattr(snap, "inputs_hash", hashing.digest(inputs_dict))
+            )
             return snapshot_id, digest
 
         snapshot_id = f"snp_{uuid.uuid4().hex}"
         digest = hashing.digest(inputs_dict)
         return snapshot_id, digest
 
-    async def evaluate_with_inputs(self, inputs: FrozenDecisionInputs, session: Any = None) -> Decision:
+    async def evaluate_with_inputs(
+        self, inputs: FrozenDecisionInputs, session: Any = None
+    ) -> Decision:
         """Run policy evaluation with already constructed FrozenDecisionInputs."""
         snap_id, inputs_hash = await self._snapshot_inputs(session, inputs)
         result = self.engine.decide(inputs)
 
-        # RETRIEVE_MORE bounded loop (Phase 4): attempt 1 records decision, refreshes verification, re-evaluates
+        # RETRIEVE_MORE bounded loop (Phase 4): attempt 1 records, refreshes, re-evaluates
         if result.outcome == DecisionOutcome.RETRIEVE_MORE and inputs.attempt == 1:
             await self._record_decision(
                 session=session,
@@ -305,7 +330,9 @@ class DecisionServiceImpl:
             refreshed_report = None
             if self.grounding_service is not None and hasattr(self.grounding_service, "verify"):
                 try:
-                    refreshed_report = await self.grounding_service.verify(inputs.proposal_id, refresh=True)
+                    refreshed_report = await self.grounding_service.verify(
+                        inputs.proposal_id, refresh=True
+                    )
                 except Exception:
                     refreshed_report = inputs.verification
 
@@ -314,7 +341,7 @@ class DecisionServiceImpl:
 
             inputs_att2 = dataclasses.replace(
                 inputs,
-                evaluated_at=datetime.now(timezone.utc),
+                evaluated_at=datetime.now(UTC),
                 attempt=2,
                 verification=refreshed_report,
             )
@@ -363,12 +390,14 @@ class DecisionServiceImpl:
         if result.outcome == DecisionOutcome.STEP_UP:
             confirmation_id = f"cnf_{uuid.uuid4().hex}"
             display = build_display_payload(inputs, result.rules_fired)
-            challenge = hashing.digest({
-                "confirmation_id": confirmation_id,
-                "display": display,
-                "expires_at": expires_at.isoformat(),
-                "proposal_hash": inputs.proposal_hash,
-            })
+            challenge = hashing.digest(
+                {
+                    "confirmation_id": confirmation_id,
+                    "display": display,
+                    "expires_at": expires_at.isoformat(),
+                    "proposal_hash": inputs.proposal_hash,
+                }
+            )
             confirmation_model = ConfirmationModel(
                 confirmation_id=confirmation_id,
                 decision_id=decision_id,
@@ -405,7 +434,9 @@ class DecisionServiceImpl:
             "expires_at": expires_at.isoformat(),
             "inputs_hash": inputs_hash,
             "inputs_snapshot_id": inputs_snapshot_id,
-            "outcome": result.outcome.value if hasattr(result.outcome, "value") else str(result.outcome),
+            "outcome": result.outcome.value
+            if hasattr(result.outcome, "value")
+            else str(result.outcome),
             "policy_version": self.engine.version,
             "proposal_hash": inputs.proposal_hash,
             "proposal_id": inputs.proposal_id,
@@ -453,10 +484,16 @@ class DecisionServiceImpl:
             },
             payload={
                 "attempt": attempt,
-                "outcome": result.outcome.value if hasattr(result.outcome, "value") else str(result.outcome),
-                "stage": result.stage.value if hasattr(result.stage, "value") else str(result.stage),
+                "outcome": result.outcome.value
+                if hasattr(result.outcome, "value")
+                else str(result.outcome),
+                "stage": result.stage.value
+                if hasattr(result.stage, "value")
+                else str(result.stage),
                 "rules_fired": [r.to_dict() for r in result.rules_fired],
-                "trust_score": float(result.trust_score) if result.trust_score is not None else None,
+                "trust_score": float(result.trust_score)
+                if result.trust_score is not None
+                else None,
                 "policy_version": self.engine.version,
                 "trust_model_version": getattr(inputs.verification.trust, "version", "trust-1.0.0"),
                 "inputs_hash": inputs_hash,
@@ -464,10 +501,7 @@ class DecisionServiceImpl:
             },
         )
 
-        if (
-            result.outcome == DecisionOutcome.BLOCK
-            and result.stage == EvaluationStage.TRUST_SCORE
-        ):
+        if result.outcome == DecisionOutcome.BLOCK and result.stage == EvaluationStage.TRUST_SCORE:
             await events.emit(
                 session,
                 transaction_id=inputs.transaction_id,
@@ -506,7 +540,9 @@ class DecisionServiceImpl:
             "expires_at": expires_at.isoformat(),
             "inputs_hash": inputs_hash,
             "inputs_snapshot_id": inputs_snapshot_id,
-            "outcome": result.outcome.value if hasattr(result.outcome, "value") else str(result.outcome),
+            "outcome": result.outcome.value
+            if hasattr(result.outcome, "value")
+            else str(result.outcome),
             "policy_version": self.engine.version,
             "proposal_hash": inputs.proposal_hash,
             "proposal_id": inputs.proposal_id,
@@ -554,10 +590,16 @@ class DecisionServiceImpl:
             },
             payload={
                 "attempt": attempt,
-                "outcome": result.outcome.value if hasattr(result.outcome, "value") else str(result.outcome),
-                "stage": result.stage.value if hasattr(result.stage, "value") else str(result.stage),
+                "outcome": result.outcome.value
+                if hasattr(result.outcome, "value")
+                else str(result.outcome),
+                "stage": result.stage.value
+                if hasattr(result.stage, "value")
+                else str(result.stage),
                 "rules_fired": [r.to_dict() for r in result.rules_fired],
-                "trust_score": float(result.trust_score) if result.trust_score is not None else None,
+                "trust_score": float(result.trust_score)
+                if result.trust_score is not None
+                else None,
                 "policy_version": self.engine.version,
                 "trust_model_version": getattr(inputs.verification.trust, "version", "trust-1.0.0"),
                 "inputs_hash": inputs_hash,
@@ -587,7 +629,7 @@ class DecisionServiceImpl:
     ) -> FrozenDecisionInputs:
         """Gather all cross-team inputs required for policy evaluation."""
         if evaluated_at is None:
-            evaluated_at = datetime.now(timezone.utc)
+            evaluated_at = datetime.now(UTC)
 
         if self.grounding_service is None:
             raise ValueError("GroundingService is required to evaluate proposals")
@@ -619,7 +661,14 @@ class DecisionServiceImpl:
             elif hasattr(self.identity_service, "get_agent"):
                 agent = await self.identity_service.get_agent(agent_id)
                 from mandit.policy.schemas import IdentityResult
-                identity = IdentityResult(agent=agent, is_active=True, operator_verified=True, kya_token_valid=True, key_bound=True)
+
+                identity = IdentityResult(
+                    agent=agent,
+                    is_active=True,
+                    operator_verified=True,
+                    kya_token_valid=True,
+                    key_bound=True,
+                )
             else:
                 identity = await self.identity_service.get(agent_id)
         else:
@@ -645,12 +694,20 @@ class DecisionServiceImpl:
         if self.user_history_service is not None:
             user_id = mandate.user_id
             if hasattr(self.user_history_service, "get_user_merchant_history"):
-                user_history = await self.user_history_service.get_user_merchant_history(user_id, merchant_id)
+                user_history = await self.user_history_service.get_user_merchant_history(
+                    user_id, merchant_id
+                )
             elif hasattr(self.user_history_service, "get"):
                 user_history = await self.user_history_service.get(user_id, merchant_id)
 
-        if confirmation is None and hasattr(self, "get_confirmation_for_proposal"):
-            confirmation = await self.get_confirmation_for_proposal(session, proposal_id)
+        if confirmation is None:
+            fn: Any = getattr(self, "get_confirmation_for_proposal", None)
+            if callable(fn):
+                res: Any = fn(session, proposal_id)
+                confirmation = cast(
+                    ConfirmationSnapshot | None,
+                    await res if hasattr(res, "__await__") else res,
+                )
 
         return FrozenDecisionInputs(
             evaluated_at=evaluated_at,

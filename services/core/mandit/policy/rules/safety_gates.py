@@ -2,6 +2,9 @@
 
 Enforces Invariant INV-10.
 """
+
+from typing import Any
+
 from mandit.policy.schemas import DecisionOutcome, FrozenDecisionInputs, RuleHit
 
 
@@ -10,6 +13,7 @@ class HG14PromptInjectionGate:
 
     Invariant INV-10: No transaction may proceed if influenced by hostile prompt injection.
     """
+
     rule_id: str = "HG-14"
     code: str = "INJECTION_DETECTED_HIGH"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -19,7 +23,7 @@ class HG14PromptInjectionGate:
 
         if risk.max_injection_severity == "HIGH":
             content_ids = list(risk.injection_content_ids)
-            detail = {"content_ids": content_ids}
+            detail: dict[str, Any] = {"content_ids": content_ids}
             if content_ids:
                 detail["content_id"] = content_ids[0]
 
@@ -37,6 +41,7 @@ class HG15SiteRiskGate:
 
     Invariant INV-10: Transactions with dangerous or high-risk sites are blocked.
     """
+
     rule_id: str = "HG-15"
     code: str = "SITE_RISK_HIGH"
     effect: DecisionOutcome = DecisionOutcome.BLOCK

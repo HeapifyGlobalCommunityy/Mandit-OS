@@ -2,6 +2,7 @@
 
 Enforces Invariants INV-01 and INV-02.
 """
+
 from mandit.policy.schemas import DecisionOutcome, FrozenDecisionInputs, RuleHit
 
 
@@ -10,6 +11,7 @@ class HG01AgentIdentityGate:
 
     Invariant INV-01: Every agent action must be attributed to an identified, verified operator.
     """
+
     rule_id: str = "HG-01"
     code: str = "AGENT_REVOKED"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -46,7 +48,10 @@ class HG01AgentIdentityGate:
                 rule_id=self.rule_id,
                 code="KEY_NOT_BOUND",
                 effect=self.effect,
-                detail={"key_id": identity.agent.key_id, "thumbprint": identity.agent.key_thumbprint},
+                detail={
+                    "key_id": identity.agent.key_id,
+                    "thumbprint": identity.agent.key_thumbprint,
+                },
             )
 
         return None
@@ -57,6 +62,7 @@ class HG02MandateValidityGate:
 
     Invariant INV-02: No agent action can exceed the user's explicit Intent Mandate.
     """
+
     rule_id: str = "HG-02"
     code: str = "MANDATE_INVALID"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -94,7 +100,10 @@ class HG02MandateValidityGate:
             )
 
         # Check agent and key binding
-        if mandate.agent_id != agent.agent_id or mandate.agent_key_thumbprint != agent.key_thumbprint:
+        if (
+            mandate.agent_id != agent.agent_id
+            or mandate.agent_key_thumbprint != agent.key_thumbprint
+        ):
             return RuleHit(
                 rule_id=self.rule_id,
                 code="AGENT_NOT_BOUND_TO_MANDATE",

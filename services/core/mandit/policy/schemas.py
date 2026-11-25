@@ -2,22 +2,25 @@
 
 Pure, immutable dataclasses representing decision inputs and outcomes.
 """
+
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 
-class DecisionOutcome(str, Enum):
+class DecisionOutcome(StrEnum):
     """Possible outcomes of policy evaluation per REFERENCE §11 and migration 0004."""
+
     ALLOW = "ALLOW"
     STEP_UP = "STEP_UP"
     RETRIEVE_MORE = "RETRIEVE_MORE"
     BLOCK = "BLOCK"
 
 
-class EvaluationStage(str, Enum):
+class EvaluationStage(StrEnum):
     """Evaluation stage recording which layer finalized the decision per migration 0004."""
+
     HARD_GATE = "HARD_GATE"
     RULE = "RULE"
     TRUST_SCORE = "TRUST_SCORE"
@@ -35,7 +38,8 @@ OUTCOME_SEVERITY: dict[DecisionOutcome, int] = {
 
 @dataclass(frozen=True)
 class RuleHit:
-    """Record of an evaluated rule firing, containing the rule identifier, reason code, effect, and details."""
+    """Record of an evaluated rule firing, containing rule_id, code, effect, and details."""
+
     rule_id: str
     code: str
     effect: DecisionOutcome
@@ -54,21 +58,24 @@ class RuleHit:
 
 # --- Team 1 Contracts (Identity & Mandate) ---
 
+
 @dataclass(frozen=True)
 class AgentContext:
     """Agent execution context verified from KYA JWT and RFC 9421 signature."""
+
     agent_id: str
     operator_id: str
     key_id: str
     key_thumbprint: str  # RFC 7638 JWK thumbprint (base64url)
     scopes: frozenset[str]
-    credential_id: str   # jti of KYA JWT
+    credential_id: str  # jti of KYA JWT
     verified_at: datetime
 
 
 @dataclass(frozen=True)
 class IdentityResult:
     """Active identity status of the agent, operator, KYA token, and key binding."""
+
     agent: AgentContext
     is_active: bool
     operator_verified: bool
@@ -79,6 +86,7 @@ class IdentityResult:
 @dataclass(frozen=True)
 class MandateConstraints:
     """Structured constraints defined within a signed Intent Mandate."""
+
     allowed_merchants: tuple[str, ...] = ()
     allowed_domains: tuple[str, ...] = ()
     allowed_categories: tuple[str, ...] = ()
@@ -97,6 +105,7 @@ class MandateConstraints:
 @dataclass(frozen=True)
 class MandateSnapshot:
     """Snapshot of a user-signed mandate at evaluation time."""
+
     mandate_id: str
     version: int
     user_id: str
@@ -112,9 +121,11 @@ class MandateSnapshot:
 
 # --- Team 2 Contracts (Safety Scanning) ---
 
+
 @dataclass(frozen=True)
 class RiskSignal:
     """Signal produced by safety scanner (e.g. site reputation or TLS anomalies)."""
+
     signal_id: str
     code: str
     severity: Literal["LOW", "MEDIUM", "HIGH"]
@@ -124,6 +135,7 @@ class RiskSignal:
 @dataclass(frozen=True)
 class RiskSummary:
     """Aggregated safety risk summary for referenced sources and target merchant."""
+
     merchant_domain: str
     site_risk_score: float  # 0.0 (safe) .. 1.0 (risky)
     site_risk_level: Literal["LOW", "MEDIUM", "HIGH"]
@@ -134,14 +146,18 @@ class RiskSummary:
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.site_risk_score <= 1.0):
-            raise ValueError(f"site_risk_score must be within [0.0, 1.0], got {self.site_risk_score}")
+            raise ValueError(
+                f"site_risk_score must be within [0.0, 1.0], got {self.site_risk_score}"
+            )
 
 
 # --- Team 3 Contracts (Grounding & Verification) ---
 
+
 @dataclass(frozen=True)
 class CheckoutSnapshot:
     """Merchant-signed checkout snapshot verified by Team 3."""
+
     checkout_id: str
     checkout_hash: str
     merchant_id: str
@@ -162,6 +178,7 @@ class CheckoutSnapshot:
 @dataclass(frozen=True)
 class CalculationResult:
     """Deterministic calculation and arithmetic reconciliation from Team 3."""
+
     computed_total_minor: int
     merchant_total_minor: int
     agent_stated_total_minor: int
@@ -178,6 +195,7 @@ class CalculationResult:
 @dataclass(frozen=True)
 class MandateMatchResult:
     """Mandate matching evaluation result produced by Team 1 / Team 3."""
+
     satisfied: bool
     violations: tuple[str, ...] = ()
     signals: tuple[str, ...] = ()
@@ -186,6 +204,7 @@ class MandateMatchResult:
 @dataclass(frozen=True)
 class SelectionResult:
     """Factual steering and price comparison sanity result."""
+
     pricier_alternative_chosen: bool
     cheapest_matching_minor: int | None = None
     difference_minor: int | None = None
@@ -194,6 +213,7 @@ class SelectionResult:
 @dataclass(frozen=True)
 class TrustResult:
     """Trust Score computation result per REFERENCE §11.3."""
+
     score: float  # 0.000 .. 1.000
     band: Literal["ALLOW", "STEP_UP", "RETRIEVE_MORE", "BLOCK"]
     components: dict[str, float]
@@ -208,6 +228,7 @@ class TrustResult:
 @dataclass(frozen=True)
 class VerificationReport:
     """Complete claim and facts verification report from Team 3."""
+
     verification_id: str
     proposal_id: str
     proposal_hash: str
@@ -230,9 +251,11 @@ class VerificationReport:
 
 # --- Human Confirmation Snapshot ---
 
+
 @dataclass(frozen=True)
 class ConfirmationSnapshot:
     """Human confirmation record for step-up resolution."""
+
     confirmation_id: str
     status: Literal["PENDING", "APPROVED", "REJECTED", "EXPIRED", "INVALIDATED"]
     proposal_hash: str
@@ -246,7 +269,7 @@ class ConfirmationSnapshot:
             raise ValueError("confirmation.expires_at must be timezone-aware")
 
     def valid_for(self, proposal_hash: str, evaluated_at: datetime) -> bool:
-        """INV-07: Valid if APPROVED, verified signature, matching proposal hash, and not expired."""
+        """INV-07: Valid if APPROVED, verified signature, matching hash, and unexpired."""
         if evaluated_at.tzinfo is None:
             raise ValueError("evaluated_at must be timezone-aware")
         return (
@@ -260,9 +283,11 @@ class ConfirmationSnapshot:
 
 # --- Policy Input and Output Contracts ---
 
+
 @dataclass(frozen=True)
 class FrozenDecisionInputs:
-    """Immutable, frozen inputs snapshot required for pure policy evaluation and deterministic replay."""
+    """Immutable frozen inputs snapshot for pure policy evaluation and deterministic replay."""
+
     evaluated_at: datetime
     attempt: int  # 1 or 2
     proposal_id: str
@@ -282,12 +307,15 @@ class FrozenDecisionInputs:
         if self.attempt not in (1, 2):
             raise ValueError(f"attempt must be 1 or 2, got {self.attempt}")
         if self.user_merchant_history < 0:
-            raise ValueError(f"user_merchant_history cannot be negative, got {self.user_merchant_history}")
+            raise ValueError(
+                f"user_merchant_history cannot be negative, got {self.user_merchant_history}"
+            )
 
 
 @dataclass(frozen=True)
 class DecisionResult:
     """Pure outcome of policy evaluation."""
+
     outcome: DecisionOutcome
     stage: EvaluationStage
     rules_fired: tuple[RuleHit, ...]
@@ -297,6 +325,7 @@ class DecisionResult:
 @dataclass(frozen=True)
 class Decision:
     """Canonical Policy Decision representation matching migration 0004 and API response."""
+
     decision_id: str
     proposal_id: str
     proposal_hash: str
@@ -344,7 +373,7 @@ class Decision:
 
 
 def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
-    """Serialize FrozenDecisionInputs to a plain JSON-compatible dictionary for Evidence snapshotting."""
+    """Serialize inputs to a plain JSON-compatible dictionary for Evidence snapshotting."""
     return {
         "evaluated_at": inputs.evaluated_at.isoformat(),
         "attempt": inputs.attempt,
@@ -387,7 +416,9 @@ def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
                 "allowed_merchants": sorted(list(inputs.mandate.constraints.allowed_merchants)),
                 "allowed_domains": sorted(list(inputs.mandate.constraints.allowed_domains)),
                 "allowed_categories": sorted(list(inputs.mandate.constraints.allowed_categories)),
-                "forbidden_line_types": sorted(list(inputs.mandate.constraints.forbidden_line_types)),
+                "forbidden_line_types": sorted(
+                    list(inputs.mandate.constraints.forbidden_line_types)
+                ),
                 "payment_methods": sorted(list(inputs.mandate.constraints.payment_methods)),
                 "currency": inputs.mandate.constraints.currency,
                 "require_refund_policy": inputs.mandate.constraints.require_refund_policy,
@@ -404,11 +435,10 @@ def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
             "scanner_version": inputs.risk.scanner_version,
             "signals": [
                 {
-                    "source_id": s.source_id,
-                    "content_id": s.content_id,
-                    "flag": s.flag,
-                    "severity": s.severity,
-                    "detail": s.detail,
+                    "signal_id": getattr(s, "signal_id", ""),
+                    "code": getattr(s, "code", ""),
+                    "severity": getattr(s, "severity", "LOW"),
+                    "detail": getattr(s, "detail", None),
                 }
                 for s in inputs.risk.signals
             ],
@@ -432,14 +462,18 @@ def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
             "calculation": {
                 "computed_total_minor": inputs.verification.calculation.computed_total_minor,
                 "merchant_total_minor": inputs.verification.calculation.merchant_total_minor,
-                "agent_stated_total_minor": inputs.verification.calculation.agent_stated_total_minor,
+                "agent_stated_total_minor": (
+                    inputs.verification.calculation.agent_stated_total_minor
+                ),
                 "reconciled": inputs.verification.calculation.reconciled,
                 "calculator_version": inputs.verification.calculation.calculator_version,
                 "subtotal_minor": inputs.verification.calculation.subtotal_minor,
                 "fees_minor": inputs.verification.calculation.fees_minor,
                 "discount_minor": inputs.verification.calculation.discount_minor,
                 "tax_minor": inputs.verification.calculation.tax_minor,
-                "agent_stated_merchant_id": inputs.verification.calculation.agent_stated_merchant_id,
+                "agent_stated_merchant_id": (
+                    inputs.verification.calculation.agent_stated_merchant_id
+                ),
                 "agent_stated_currency": inputs.verification.calculation.agent_stated_currency,
             },
             "mandate_match": {
@@ -448,7 +482,9 @@ def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
                 "signals": list(inputs.verification.mandate_match.signals),
             },
             "selection": {
-                "pricier_alternative_chosen": inputs.verification.selection.pricier_alternative_chosen,
+                "pricier_alternative_chosen": (
+                    inputs.verification.selection.pricier_alternative_chosen
+                ),
                 "cheapest_matching_minor": inputs.verification.selection.cheapest_matching_minor,
                 "difference_minor": inputs.verification.selection.difference_minor,
             },
@@ -463,7 +499,9 @@ def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
             "critical_unverified": list(inputs.verification.critical_unverified),
             "abstentions": list(inputs.verification.abstentions),
             "verifier_version": inputs.verification.verifier_version,
-            "created_at": inputs.verification.created_at.isoformat() if inputs.verification.created_at else None,
+            "created_at": inputs.verification.created_at.isoformat()
+            if inputs.verification.created_at
+            else None,
         },
         "confirmation": (
             {
@@ -473,7 +511,9 @@ def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
                 "expires_at": inputs.confirmation.expires_at.isoformat(),
                 "response_signature": inputs.confirmation.response_signature,
                 "signature_verified": inputs.confirmation.signature_verified,
-                "responded_at": inputs.confirmation.responded_at.isoformat() if inputs.confirmation.responded_at else None,
+                "responded_at": inputs.confirmation.responded_at.isoformat()
+                if inputs.confirmation.responded_at
+                else None,
             }
             if inputs.confirmation
             else None

@@ -2,6 +2,7 @@
 
 Defines protocols for individual policy rules and the pure policy engine.
 """
+
 from typing import Protocol
 
 from mandit.policy.schemas import (

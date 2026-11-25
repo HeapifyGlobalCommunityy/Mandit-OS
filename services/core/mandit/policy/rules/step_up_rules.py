@@ -3,14 +3,18 @@
 Enforces advisory heuristics that require human confirmation for risky but in-mandate actions
 per docs/REFERENCE.md §11.2 and docs/modules/04-policy-and-payments.md §5.1.
 """
+
+from typing import Any
+
 from mandit.policy.schemas import DecisionOutcome, FrozenDecisionInputs, RuleHit
 
 
 class SU01ApprovalThresholdRule:
     """SU-01: Total >= mandate approval_threshold_minor.
 
-    Per 01-identity-and-mandate.md §6.1, a threshold of 0 means every purchase requires confirmation.
+    Per 01-identity-and-mandate.md §6.1, threshold of 0 requires confirmation for all.
     """
+
     rule_id: str = "SU-01"
     code: str = "ABOVE_APPROVAL_THRESHOLD"
     effect: DecisionOutcome = DecisionOutcome.STEP_UP
@@ -35,6 +39,7 @@ class SU02NewMerchantRule:
 
     Triggers when user_merchant_history == 0 (no recorded previous purchases).
     """
+
     rule_id: str = "SU-02"
     code: str = "NEW_MERCHANT_FOR_USER"
     effect: DecisionOutcome = DecisionOutcome.STEP_UP
@@ -55,6 +60,7 @@ class SU02NewMerchantRule:
 
 class SU03MediumSiteRiskRule:
     """SU-03: Merchant domain site risk is MEDIUM."""
+
     rule_id: str = "SU-03"
     code: str = "SITE_RISK_MEDIUM"
     effect: DecisionOutcome = DecisionOutcome.STEP_UP
@@ -76,6 +82,7 @@ class SU03MediumSiteRiskRule:
 
 class SU04MediumInjectionRule:
     """SU-04: Medium-severity injection in a referenced source."""
+
     rule_id: str = "SU-04"
     code: str = "INJECTION_DETECTED_MEDIUM"
     effect: DecisionOutcome = DecisionOutcome.STEP_UP
@@ -83,7 +90,7 @@ class SU04MediumInjectionRule:
     def evaluate(self, inputs: FrozenDecisionInputs) -> RuleHit | None:
         if inputs.risk.max_injection_severity == "MEDIUM":
             content_ids = list(inputs.risk.injection_content_ids)
-            detail = {"content_ids": content_ids}
+            detail: dict[str, Any] = {"content_ids": content_ids}
             if content_ids:
                 detail["content_id"] = content_ids[0]
 
@@ -97,7 +104,8 @@ class SU04MediumInjectionRule:
 
 
 class SU05PriceUnverifiedRule:
-    """SU-05: The displayed (page) price differs from the catalog price, or the price claim is unverifiable."""
+    """SU-05: Page price differs from catalog, or price claim is unverifiable."""
+
     rule_id: str = "SU-05"
     code: str = "PRICE_MISMATCH"
     effect: DecisionOutcome = DecisionOutcome.STEP_UP
@@ -133,6 +141,7 @@ class SU05PriceUnverifiedRule:
 
 class SU06TermsUnverifiedRule:
     """SU-06: Delivery or returns term unverifiable while the mandate requires it."""
+
     rule_id: str = "SU-06"
     code: str = "DELIVERY_UNVERIFIED"
     effect: DecisionOutcome = DecisionOutcome.STEP_UP
@@ -182,10 +191,11 @@ class SU06TermsUnverifiedRule:
 
 
 class SU07PricierAlternativeRule:
-    """SU-07: The agent chose a pricier item than a cheaper item it saw that matches every mandate constraint.
+    """SU-07: Agent chose pricier item than a cheaper item matching every mandate constraint.
 
     Factual-steering defence per docs/modules/03-grounding-and-verification.md §7.6.
     """
+
     rule_id: str = "SU-07"
     code: str = "PRICIER_ALTERNATIVE_CHOSEN"
     effect: DecisionOutcome = DecisionOutcome.STEP_UP

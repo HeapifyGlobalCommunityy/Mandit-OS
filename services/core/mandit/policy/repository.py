@@ -2,11 +2,12 @@
 
 Provides DB operations using SQLAlchemy sessions conforming to migration 0004.
 """
-from typing import Any
+
 from datetime import datetime
+from typing import Any
+
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from mandit.policy.models import ConfirmationModel, DecisionModel
 
@@ -28,7 +29,9 @@ class DecisionRepository:
         session.add(confirmation)
         session.flush()
 
-    def get_confirmation_sync(self, session: Session, confirmation_id: str) -> ConfirmationModel | None:
+    def get_confirmation_sync(
+        self, session: Session, confirmation_id: str
+    ) -> ConfirmationModel | None:
         """Retrieve a confirmation record by confirmation_id synchronously."""
         return session.get(ConfirmationModel, confirmation_id)
 
@@ -60,7 +63,9 @@ class DecisionRepository:
             if hasattr(res, "__await__"):
                 await res
 
-    async def get_confirmation(self, session: Any, confirmation_id: str) -> ConfirmationModel | None:
+    async def get_confirmation(
+        self, session: Any, confirmation_id: str
+    ) -> ConfirmationModel | None:
         """Retrieve a confirmation record by confirmation_id."""
         if hasattr(session, "get"):
             res = session.get(ConfirmationModel, confirmation_id)
@@ -82,7 +87,7 @@ class DecisionRepository:
     ) -> bool:
         """Atomically transition confirmation status using CAS.
 
-        Returns True if transition succeeded, False if row was not in expected_status or did not exist.
+        Returns True if transition succeeded, False if row was not in expected_status.
         """
         values: dict[str, Any] = {"status": new_status}
         if response_signature is not None:

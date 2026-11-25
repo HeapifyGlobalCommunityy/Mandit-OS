@@ -1,7 +1,9 @@
-"""Hard Gates for Financial constraints, Arithmetic, and Caps (HG-06, HG-07, HG-08, HG-09, HG-10, HG-13).
+"""Hard Gates for Financial constraints, Arithmetic, and Caps.
 
+Covers HG-06, HG-07, HG-08, HG-09, HG-10, HG-13.
 Enforces Invariants INV-02 and INV-06.
 """
+
 from mandit.policy.schemas import DecisionOutcome, FrozenDecisionInputs, RuleHit
 
 
@@ -10,6 +12,7 @@ class HG06CurrencyGate:
 
     Invariant INV-02: Mandate currency constraint is strictly enforced.
     """
+
     rule_id: str = "HG-06"
     code: str = "CURRENCY_MISMATCH"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -34,6 +37,7 @@ class HG07PerTxnCapGate:
 
     Invariant INV-02: Single transaction spend cap cannot be bypassed.
     """
+
     rule_id: str = "HG-07"
     code: str = "OVER_TXN_CAP"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -58,6 +62,7 @@ class HG08CumulativeCapsGate:
 
     Invariant INV-02: Total budget and usage limits cannot be exceeded.
     """
+
     rule_id: str = "HG-08"
     code: str = "OVER_TOTAL_CAP"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -86,14 +91,16 @@ class HG08CumulativeCapsGate:
 
         # Check transaction count cap
         if "TXN_COUNT_EXCEEDED" in violations or (
-            constraints.max_txn_count > 0
-            and mandate.spend_count + 1 > constraints.max_txn_count
+            constraints.max_txn_count > 0 and mandate.spend_count + 1 > constraints.max_txn_count
         ):
             return RuleHit(
                 rule_id=self.rule_id,
                 code="TXN_COUNT_EXCEEDED",
                 effect=self.effect,
-                detail={"current_count": mandate.spend_count, "max_count": constraints.max_txn_count},
+                detail={
+                    "current_count": mandate.spend_count,
+                    "max_count": constraints.max_txn_count,
+                },
             )
 
         return None
@@ -104,6 +111,7 @@ class HG09CalculationRecomputeGate:
 
     Invariant INV-06: Totals must be deterministically proven by line item arithmetic.
     """
+
     rule_id: str = "HG-09"
     code: str = "TOTAL_RECOMPUTE_MISMATCH"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -130,6 +138,7 @@ class HG10AgentStatementGate:
 
     Invariant INV-06: Agent proposal must faithfully reflect the merchant checkout.
     """
+
     rule_id: str = "HG-10"
     code: str = "AGENT_AMOUNT_MISMATCH"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -182,6 +191,7 @@ class HG13PaymentMethodGate:
 
     Invariant INV-02: Payment rails are constrained by user consent.
     """
+
     rule_id: str = "HG-13"
     code: str = "PAYMENT_METHOD_NOT_ALLOWED"
     effect: DecisionOutcome = DecisionOutcome.BLOCK

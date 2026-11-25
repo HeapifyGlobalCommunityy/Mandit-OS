@@ -2,6 +2,7 @@
 
 Enforces Invariants INV-03, INV-04, and INV-05.
 """
+
 from mandit.policy.schemas import DecisionOutcome, FrozenDecisionInputs, RuleHit
 
 
@@ -10,6 +11,7 @@ class HG03MerchantAllowlistGate:
 
     Invariant INV-03: Agents may only transact with merchants explicitly permitted by the mandate.
     """
+
     rule_id: str = "HG-03"
     code: str = "MERCHANT_NOT_ALLOWED"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -27,7 +29,10 @@ class HG03MerchantAllowlistGate:
                 rule_id=self.rule_id,
                 code="MERCHANT_NOT_ALLOWED",
                 effect=self.effect,
-                detail={"merchant_id": checkout.merchant_id, "allowed": constraints.allowed_merchants},
+                detail={
+                    "merchant_id": checkout.merchant_id,
+                    "allowed": constraints.allowed_merchants,
+                },
             )
 
         if "DOMAIN_NOT_ALLOWED" in violations or (
@@ -45,10 +50,11 @@ class HG03MerchantAllowlistGate:
 
 
 class HG04MerchantRegistryGate:
-    """HG-04: Merchant not in the registry, merchant suspended, or payee differs from registry payee.
+    """HG-04: Merchant not in registry, suspended, or payee differs from registry payee.
 
-    Invariant INV-04: Money can only move to legitimate, verified payees matching the merchant registry.
+    Invariant INV-04: Money can only move to legitimate, verified payees matching registry.
     """
+
     rule_id: str = "HG-04"
     code: str = "MERCHANT_NOT_IN_REGISTRY"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
@@ -86,8 +92,9 @@ class HG04MerchantRegistryGate:
 class HG05CheckoutIntegrityGate:
     """HG-05: Checkout signature invalid or checkout expired.
 
-    Invariant INV-05: Financial terms must be cryptographically attested by the merchant and unexpired.
+    Invariant INV-05: Financial terms must be cryptographically attested and unexpired.
     """
+
     rule_id: str = "HG-05"
     code: str = "CHECKOUT_SIGNATURE_INVALID"
     effect: DecisionOutcome = DecisionOutcome.BLOCK
