@@ -35,7 +35,8 @@ test:
 migrations:
 	$(PYTHON) scripts/ci/check_migrations.py
 
+# Scans only the history of HEAD (in a PR: the PR merged into main), not other branches.
 secrets:
-	docker run --rm -v "$(CURDIR):/repo" $(GITLEAKS_IMAGE) git /repo --redact --verbose
+	docker run --rm -v "$(CURDIR):/repo" $(GITLEAKS_IMAGE) git /repo --log-opts="HEAD" --redact --verbose
 
 ci: lint test
