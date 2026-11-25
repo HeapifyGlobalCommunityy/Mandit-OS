@@ -15,8 +15,11 @@ def base64url(raw: bytes) -> str:
 
 
 def decode_fixed(value: object, size: int) -> bytes:
-    if (not isinstance(value, str) or len(value) != (size * 8 + 5) // 6
-            or not re.fullmatch(r"[A-Za-z0-9_-]+", value)):
+    if (
+        not isinstance(value, str)
+        or len(value) != (size * 8 + 5) // 6
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", value)
+    ):
         raise ValueError("Invalid base64url length or alphabet")
     raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
     if base64url(raw) != value:
@@ -25,8 +28,12 @@ def decode_fixed(value: object, size: int) -> bytes:
 
 
 def public_key_from_jwk(jwk: Mapping[str, object]) -> Ed25519PublicKey:
-    if (not isinstance(jwk, Mapping) or jwk.get("kty") != "OKP"
-            or jwk.get("crv") != "Ed25519" or "d" in jwk):
+    if (
+        not isinstance(jwk, Mapping)
+        or jwk.get("kty") != "OKP"
+        or jwk.get("crv") != "Ed25519"
+        or "d" in jwk
+    ):
         raise IdentityError("VALIDATION_ERROR", "Expected a public Ed25519 JWK")
     try:
         raw = decode_fixed(jwk.get("x"), 32)
