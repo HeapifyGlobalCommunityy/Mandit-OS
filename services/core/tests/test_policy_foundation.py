@@ -3,24 +3,21 @@
 Tests pure function determinism, stage transitions, severity resolution,
 trust score bands, and confirmation constraints (INV-07, INV-11).
 """
-from datetime import datetime, timezone
-import pytest
 
-from mandit.policy.interface import PolicyRule
+from datetime import UTC, datetime
+
 from mandit.policy.schemas import (
     AgentContext,
     CalculationResult,
     CheckoutSnapshot,
     ConfirmationSnapshot,
     DecisionOutcome,
-    DecisionResult,
     EvaluationStage,
     FrozenDecisionInputs,
     IdentityResult,
     MandateConstraints,
     MandateMatchResult,
     MandateSnapshot,
-    RiskSignal,
     RiskSummary,
     RuleHit,
     SelectionResult,
@@ -55,7 +52,7 @@ def create_sample_inputs(
 ) -> FrozenDecisionInputs:
     """Helper fixture to create valid, immutable FrozenDecisionInputs."""
     if evaluated_at is None:
-        evaluated_at = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
+        evaluated_at = datetime(2026, 11, 24, 12, 0, 0, tzinfo=UTC)
 
     agent_ctx = AgentContext(
         agent_id="agt_01JD3Y0000SHOPPERV3000000",
@@ -64,7 +61,7 @@ def create_sample_inputs(
         key_thumbprint="q8xR3...",
         scopes=frozenset(["mandit:propose", "mandit:execute"]),
         credential_id="kya_01JD3Y4K1M2N3P4Q5R6S7T8V9W",
-        verified_at=datetime(2026, 11, 24, 11, 55, 0, tzinfo=timezone.utc),
+        verified_at=datetime(2026, 11, 24, 11, 55, 0, tzinfo=UTC),
     )
 
     identity = IdentityResult(agent=agent_ctx, is_active=True, operator_verified=True)
@@ -87,8 +84,8 @@ def create_sample_inputs(
         agent_id="agt_01JD3Y0000SHOPPERV3000000",
         agent_key_thumbprint="q8xR3...",
         constraints=constraints,
-        not_before=datetime(2026, 11, 24, 0, 0, 0, tzinfo=timezone.utc),
-        expires_at=datetime(2026, 11, 25, 0, 0, 0, tzinfo=timezone.utc),
+        not_before=datetime(2026, 11, 24, 0, 0, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 11, 25, 0, 0, 0, tzinfo=UTC),
         status="ACTIVE",
         spent_minor=0,
         spend_count=0,
@@ -113,7 +110,7 @@ def create_sample_inputs(
         amount_minor=6482966,
         currency="INR",
         merchant_signature_valid=True,
-        expires_at=datetime(2026, 11, 24, 12, 30, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 11, 24, 12, 30, 0, tzinfo=UTC),
     )
 
     calculation = CalculationResult(
@@ -185,7 +182,7 @@ def test_pure_decide_happy_path_allow() -> None:
 
 
 def test_pure_decide_hard_gate_blocks_immediately() -> None:
-    """When a hard gate fires with BLOCK, evaluation returns BLOCK immediately with stage HARD_GATE."""
+    """When a hard gate fires with BLOCK, returns BLOCK immediately with stage HARD_GATE."""
     inputs = create_sample_inputs(trust_score=0.98)
     hg_failing = MockRule("HG-01", "AGENT_REVOKED", DecisionOutcome.BLOCK, fires=True)
     su_firing = MockRule("SU-01", "ABOVE_APPROVAL_THRESHOLD", DecisionOutcome.STEP_UP, fires=True)
@@ -261,14 +258,14 @@ def test_pure_decide_trust_score_bands() -> None:
 
 def test_pure_decide_confirmation_satisfies_step_up() -> None:
     """Human approval resolves STEP_UP to ALLOW with stage CONFIRMATION."""
-    eval_time = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
+    eval_time = datetime(2026, 11, 24, 12, 0, 0, tzinfo=UTC)
     proposal_hash = "sha256:7ab2..."
 
     valid_confirmation = ConfirmationSnapshot(
         confirmation_id="cnf_01JD49...",
         status="APPROVED",
         proposal_hash=proposal_hash,
-        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=UTC),
         response_signature={"alg": "ES256", "value": "MEQCIF..."},
         signature_verified=True,
     )
@@ -295,7 +292,7 @@ def test_pure_decide_confirmation_cannot_override_block_or_retrieve_more() -> No
         confirmation_id="cnf_01JD49...",
         status="APPROVED",
         proposal_hash="sha256:7ab2...",
-        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=UTC),
         response_signature={"alg": "ES256", "value": "MEQCIF..."},
         signature_verified=True,
     )
@@ -308,7 +305,9 @@ def test_pure_decide_confirmation_cannot_override_block_or_retrieve_more() -> No
     assert res_block.stage == EvaluationStage.HARD_GATE
 
     # RETRIEVE_MORE + valid confirmation -> RETRIEVE_MORE
-    inputs_retrieve = create_sample_inputs(trust_score=0.60, attempt=1, confirmation=valid_confirmation)
+    inputs_retrieve = create_sample_inputs(
+        trust_score=0.60, attempt=1, confirmation=valid_confirmation
+    )
     res_retrieve = decide(inputs_retrieve)
     assert res_retrieve.outcome == DecisionOutcome.RETRIEVE_MORE
 
@@ -319,7 +318,7 @@ def test_pure_decide_unverified_confirmation_rejected() -> None:
         confirmation_id="cnf_01JD49...",
         status="APPROVED",
         proposal_hash="sha256:7ab2...",
-        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=UTC),
         response_signature={"alg": "ES256", "value": "MEQCIF..."},
         signature_verified=False,  # Unverified!
     )
@@ -332,7 +331,7 @@ def test_pure_decide_unverified_confirmation_rejected() -> None:
 
 
 def test_pure_decide_determinism() -> None:
-    """Running decide() multiple times on the same frozen inputs produces identical output (INV-11)."""
+    """Running decide() on same frozen inputs produces identical output (INV-11)."""
     inputs = create_sample_inputs(trust_score=0.82)
     su = MockRule("SU-02", "NEW_MERCHANT_FOR_USER", DecisionOutcome.STEP_UP, fires=True)
 

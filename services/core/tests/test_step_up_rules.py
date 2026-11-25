@@ -3,12 +3,10 @@
 Verifies advisory triggers, trust score boundaries, RETRIEVE_MORE attempt handling,
 precedence hierarchies, and confirmation resolution.
 """
-from dataclasses import replace
-from datetime import datetime, timezone
-import pytest
+
+from datetime import UTC, datetime
 
 from mandit.policy.rules import (
-    ALL_STEP_UP_RULES,
     SU01ApprovalThresholdRule,
     SU02NewMerchantRule,
     SU03MediumSiteRiskRule,
@@ -51,8 +49,8 @@ def create_baseline_inputs(
     confirmation: ConfirmationSnapshot | None = None,
     signals: tuple[str, ...] = (),
 ) -> FrozenDecisionInputs:
-    """Helper creating a clean in-mandate input baseline that satisfies all hard gates and triggers no step-ups."""
-    eval_time = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
+    """Helper creating clean baseline inputs satisfying all hard gates with no step-ups."""
+    eval_time = datetime(2026, 11, 24, 12, 0, 0, tzinfo=UTC)
 
     agent_ctx = AgentContext(
         agent_id="agt_01JD3Y0000SHOPPERV3000000",
@@ -61,7 +59,7 @@ def create_baseline_inputs(
         key_thumbprint="q8xR3...thumbprint",
         scopes=frozenset(["mandit:propose", "mandit:execute"]),
         credential_id="kya_01JD3Y4K1M2N3P4Q5R6S7T8V9W",
-        verified_at=datetime(2026, 11, 24, 11, 55, 0, tzinfo=timezone.utc),
+        verified_at=datetime(2026, 11, 24, 11, 55, 0, tzinfo=UTC),
     )
 
     identity = IdentityResult(
@@ -93,8 +91,8 @@ def create_baseline_inputs(
         agent_id="agt_01JD3Y0000SHOPPERV3000000",
         agent_key_thumbprint="q8xR3...thumbprint",
         constraints=constraints,
-        not_before=datetime(2026, 11, 24, 0, 0, 0, tzinfo=timezone.utc),
-        expires_at=datetime(2026, 11, 25, 0, 0, 0, tzinfo=timezone.utc),
+        not_before=datetime(2026, 11, 24, 0, 0, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 11, 25, 0, 0, 0, tzinfo=UTC),
         status="ACTIVE",
         spent_minor=1000000,
         spend_count=1,
@@ -119,7 +117,7 @@ def create_baseline_inputs(
         amount_minor=amount_minor,
         currency="INR",
         merchant_signature_valid=True,
-        expires_at=datetime(2026, 11, 24, 12, 30, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 11, 24, 12, 30, 0, tzinfo=UTC),
     )
 
     calculation = CalculationResult(
@@ -183,9 +181,12 @@ def create_baseline_inputs(
 
 # --- 1. Positive Baseline Test ---
 
+
 def test_compliant_repeat_merchant_allows_cleanly() -> None:
-    """An in-mandate transaction with repeat merchant, under threshold, low risk, and high trust produces ALLOW."""
-    inputs = create_baseline_inputs(amount_minor=4000000, approval_threshold_minor=5000000, user_merchant_history=3)
+    """In-mandate transaction with repeat merchant, under threshold, high trust yields ALLOW."""
+    inputs = create_baseline_inputs(
+        amount_minor=4000000, approval_threshold_minor=5000000, user_merchant_history=3
+    )
     engine = DefaultPolicyEngine()
 
     res = engine.decide(inputs)
@@ -196,6 +197,7 @@ def test_compliant_repeat_merchant_allows_cleanly() -> None:
 
 
 # --- 2. Gate-by-Gate Tests for SU-01 to SU-07 ---
+
 
 def test_su01_above_approval_threshold() -> None:
     """SU-01: Fires when amount_minor >= approval_threshold_minor."""
@@ -217,7 +219,7 @@ def test_su01_above_approval_threshold() -> None:
 
 
 def test_su01_zero_approval_threshold_always_requires_confirmation() -> None:
-    """SU-01: When approval_threshold_minor == 0, mandate requires confirmation for every purchase."""
+    """SU-01: When threshold == 0, mandate requires confirmation for every purchase."""
     rule = SU01ApprovalThresholdRule()
     inputs = create_baseline_inputs(amount_minor=100000, approval_threshold_minor=0)
 
@@ -291,7 +293,7 @@ def test_su05_price_mismatch_and_unverified() -> None:
 
 
 def test_su06_terms_unverified_while_required() -> None:
-    """SU-06: Fires when delivery or returns information is unverifiable while mandate requires it."""
+    """SU-06: Fires when delivery or returns unverified while mandate requires it."""
     rule = SU06TermsUnverifiedRule()
 
     # Clean signals: no hit
@@ -325,6 +327,7 @@ def test_su07_pricier_alternative_chosen() -> None:
 
 # --- 3. Trust Score Boundaries and Refresh Exhaustion ---
 
+
 def test_trust_score_boundaries_and_codes() -> None:
     """Validate exact trust score thresholds, reason codes, and attempt-based refresh."""
     # 0.90 -> ALLOW
@@ -347,7 +350,10 @@ def test_trust_score_boundaries_and_codes() -> None:
     res_69_att1 = decide(create_baseline_inputs(trust_score=0.69, attempt=1))
     assert res_69_att1.outcome == DecisionOutcome.RETRIEVE_MORE
     assert res_69_att1.stage == EvaluationStage.TRUST_SCORE
-    assert any(h.rule_id == "TS-01" and h.code == "TRUST_SCORE_RETRIEVE_MORE" for h in res_69_att1.rules_fired)
+    assert any(
+        h.rule_id == "TS-01" and h.code == "TRUST_SCORE_RETRIEVE_MORE"
+        for h in res_69_att1.rules_fired
+    )
 
     # 0.50 attempt 1 -> RETRIEVE_MORE
     res_50_att1 = decide(create_baseline_inputs(trust_score=0.50, attempt=1))
@@ -357,7 +363,10 @@ def test_trust_score_boundaries_and_codes() -> None:
     res_60_att2 = decide(create_baseline_inputs(trust_score=0.60, attempt=2))
     assert res_60_att2.outcome == DecisionOutcome.STEP_UP
     assert res_60_att2.stage == EvaluationStage.TRUST_SCORE
-    assert any(h.rule_id == "TS-02" and h.code == "RETRIEVE_MORE_EXHAUSTED" for h in res_60_att2.rules_fired)
+    assert any(
+        h.rule_id == "TS-02" and h.code == "RETRIEVE_MORE_EXHAUSTED"
+        for h in res_60_att2.rules_fired
+    )
 
     # 0.49 -> BLOCK with TS-01
     res_49 = decide(create_baseline_inputs(trust_score=0.49))
@@ -368,13 +377,14 @@ def test_trust_score_boundaries_and_codes() -> None:
 
 # --- 4. Precedence, Multiple Rules, and Confirmation Resolution ---
 
+
 def test_multiple_step_up_rules_recorded_and_stage_is_rule() -> None:
     """When multiple Step-Up rules fire, all are recorded in rules_fired and stage is RULE."""
     inputs = create_baseline_inputs(
         amount_minor=6000000,
         approval_threshold_minor=5000000,  # SU-01
-        user_merchant_history=0,          # SU-02
-        site_risk_level="MEDIUM",         # SU-03
+        user_merchant_history=0,  # SU-02
+        site_risk_level="MEDIUM",  # SU-03
         pricier_alternative_chosen=True,  # SU-07
     )
 
@@ -397,7 +407,7 @@ def test_trust_score_block_overrides_step_up_rules() -> None:
     """Precedence: Trust score BLOCK (< 0.50) overrides Step-Up rule STEP_UP."""
     inputs = create_baseline_inputs(
         user_merchant_history=0,  # SU-02 fires
-        trust_score=0.42,        # Trust score BLOCK
+        trust_score=0.42,  # Trust score BLOCK
     )
 
     res = decide(inputs)
@@ -412,7 +422,7 @@ def test_trust_score_retrieve_more_overrides_step_up_rules_on_attempt_1() -> Non
     """Precedence: On attempt 1, RETRIEVE_MORE (2) takes precedence over STEP_UP (1)."""
     inputs = create_baseline_inputs(
         user_merchant_history=0,  # SU-02 fires
-        trust_score=0.62,        # RETRIEVE_MORE band
+        trust_score=0.62,  # RETRIEVE_MORE band
         attempt=1,
     )
 
@@ -426,14 +436,13 @@ def test_trust_score_retrieve_more_overrides_step_up_rules_on_attempt_1() -> Non
 
 def test_valid_confirmation_resolves_step_up_to_allow() -> None:
     """Valid user confirmation resolves candidate STEP_UP to ALLOW with stage CONFIRMATION."""
-    eval_time = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
     proposal_hash = "sha256:7ab2..."
 
     confirmation = ConfirmationSnapshot(
         confirmation_id="cnf_01JD49...",
         status="APPROVED",
         proposal_hash=proposal_hash,
-        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=UTC),
         response_signature={"alg": "ES256", "value": "MEQCIF..."},
         signature_verified=True,
     )
@@ -452,14 +461,13 @@ def test_valid_confirmation_resolves_step_up_to_allow() -> None:
 
 def test_confirmation_cannot_override_trust_score_block_or_retrieve_more() -> None:
     """INV-07: Human confirmation cannot resolve BLOCK or RETRIEVE_MORE."""
-    eval_time = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
     proposal_hash = "sha256:7ab2..."
 
     confirmation = ConfirmationSnapshot(
         confirmation_id="cnf_01JD49...",
         status="APPROVED",
         proposal_hash=proposal_hash,
-        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 11, 24, 12, 10, 0, tzinfo=UTC),
         response_signature={"alg": "ES256", "value": "MEQCIF..."},
         signature_verified=True,
     )

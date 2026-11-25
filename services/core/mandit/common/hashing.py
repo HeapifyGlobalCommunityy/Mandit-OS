@@ -3,8 +3,10 @@
 Per docs/REFERENCE.md §8:
 digest(obj) -> str returns "sha256:<64-char-hex>"
 """
+
 import hashlib
 from typing import Any
+
 from mandit.common import jcs
 
 

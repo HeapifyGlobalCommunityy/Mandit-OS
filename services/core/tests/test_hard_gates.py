@@ -3,8 +3,9 @@
 Verifies positive and negative cases for every hard gate, security invariant enforcement,
 and compound attack scenarios.
 """
-from datetime import datetime, timezone
+
 from dataclasses import replace
+from datetime import UTC, datetime
 
 from mandit.policy.rules import (
     ALL_HARD_GATES,
@@ -41,12 +42,12 @@ from mandit.policy.schemas import (
     TrustResult,
     VerificationReport,
 )
-from mandit.policy.service import DefaultPolicyEngine, decide
+from mandit.policy.service import DefaultPolicyEngine
 
 
 def create_compliant_inputs() -> FrozenDecisionInputs:
     """Helper returning an honest, fully compliant, in-mandate transaction input."""
-    eval_time = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
+    eval_time = datetime(2026, 11, 24, 12, 0, 0, tzinfo=UTC)
 
     agent_ctx = AgentContext(
         agent_id="agt_01JD3Y0000SHOPPERV3000000",
@@ -55,7 +56,7 @@ def create_compliant_inputs() -> FrozenDecisionInputs:
         key_thumbprint="q8xR3...thumbprint",
         scopes=frozenset(["mandit:propose", "mandit:execute"]),
         credential_id="kya_01JD3Y4K1M2N3P4Q5R6S7T8V9W",
-        verified_at=datetime(2026, 11, 24, 11, 55, 0, tzinfo=timezone.utc),
+        verified_at=datetime(2026, 11, 24, 11, 55, 0, tzinfo=UTC),
     )
 
     identity = IdentityResult(
@@ -85,8 +86,8 @@ def create_compliant_inputs() -> FrozenDecisionInputs:
         agent_id="agt_01JD3Y0000SHOPPERV3000000",
         agent_key_thumbprint="q8xR3...thumbprint",
         constraints=constraints,
-        not_before=datetime(2026, 11, 24, 0, 0, 0, tzinfo=timezone.utc),
-        expires_at=datetime(2026, 11, 25, 0, 0, 0, tzinfo=timezone.utc),
+        not_before=datetime(2026, 11, 24, 0, 0, 0, tzinfo=UTC),
+        expires_at=datetime(2026, 11, 25, 0, 0, 0, tzinfo=UTC),
         status="ACTIVE",
         spent_minor=1000000,
         spend_count=1,
@@ -111,7 +112,7 @@ def create_compliant_inputs() -> FrozenDecisionInputs:
         amount_minor=6482966,
         currency="INR",
         merchant_signature_valid=True,
-        expires_at=datetime(2026, 11, 24, 12, 30, 0, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 11, 24, 12, 30, 0, tzinfo=UTC),
     )
 
     calculation = CalculationResult(
@@ -166,6 +167,7 @@ def create_compliant_inputs() -> FrozenDecisionInputs:
 
 # --- 1. Positive Baseline Test ---
 
+
 def test_all_16_hard_gates_pass_on_compliant_transaction() -> None:
     """An honest, compliant transaction passes every hard gate with zero hits."""
     inputs = create_compliant_inputs()
@@ -179,6 +181,7 @@ def test_all_16_hard_gates_pass_on_compliant_transaction() -> None:
 
 
 # --- 2. Gate-by-Gate Positive & Negative Tests ---
+
 
 def test_hg01_agent_identity_gate() -> None:
     """HG-01: Agent must be active, operator verified, KYA token valid, and key bound."""
@@ -194,12 +197,16 @@ def test_hg01_agent_identity_gate() -> None:
     assert hit is not None and hit.code == "AGENT_REVOKED"
 
     # Negative 2: Operator unverified
-    unverified_op = replace(base_inputs, identity=replace(base_inputs.identity, operator_verified=False))
+    unverified_op = replace(
+        base_inputs, identity=replace(base_inputs.identity, operator_verified=False)
+    )
     hit = gate.evaluate(unverified_op)
     assert hit is not None and hit.code == "OPERATOR_NOT_VERIFIED"
 
     # Negative 3: KYA token invalid
-    invalid_token = replace(base_inputs, identity=replace(base_inputs.identity, kya_token_valid=False))
+    invalid_token = replace(
+        base_inputs, identity=replace(base_inputs.identity, kya_token_valid=False)
+    )
     hit = gate.evaluate(invalid_token)
     assert hit is not None and hit.code == "KYA_TOKEN_INVALID"
 
@@ -223,17 +230,19 @@ def test_hg02_mandate_validity_gate() -> None:
     assert hit is not None and hit.code == "MANDATE_REVOKED"
 
     # Negative 2: Mandate expired
-    past_expiry = replace(base_inputs, evaluated_at=datetime(2026, 11, 26, 0, 0, 0, tzinfo=timezone.utc))
+    past_expiry = replace(base_inputs, evaluated_at=datetime(2026, 11, 26, 0, 0, 0, tzinfo=UTC))
     hit = gate.evaluate(past_expiry)
     assert hit is not None and hit.code == "MANDATE_EXPIRED"
 
     # Negative 3: Not yet valid
-    before_nbf = replace(base_inputs, evaluated_at=datetime(2026, 11, 23, 0, 0, 0, tzinfo=timezone.utc))
+    before_nbf = replace(base_inputs, evaluated_at=datetime(2026, 11, 23, 0, 0, 0, tzinfo=UTC))
     hit = gate.evaluate(before_nbf)
     assert hit is not None and hit.code == "MANDATE_NOT_YET_VALID"
 
     # Negative 4: Agent not bound to mandate
-    wrong_agent = replace(base_inputs, mandate=replace(base_inputs.mandate, agent_id="agt_attacker"))
+    wrong_agent = replace(
+        base_inputs, mandate=replace(base_inputs.mandate, agent_id="agt_attacker")
+    )
     hit = gate.evaluate(wrong_agent)
     assert hit is not None and hit.code == "AGENT_NOT_BOUND_TO_MANDATE"
 
@@ -282,7 +291,9 @@ def test_hg04_merchant_registry_gate() -> None:
         base_inputs,
         verification=replace(
             base_inputs.verification,
-            mandate_match=MandateMatchResult(satisfied=False, violations=("MERCHANT_NOT_IN_REGISTRY",)),
+            mandate_match=MandateMatchResult(
+                satisfied=False, violations=("MERCHANT_NOT_IN_REGISTRY",)
+            ),
         ),
     )
     hit = gate.evaluate(unregistered)
@@ -337,7 +348,7 @@ def test_hg05_checkout_integrity_gate() -> None:
             base_inputs.verification,
             checkout=replace(
                 base_inputs.verification.checkout,
-                expires_at=datetime(2026, 11, 24, 11, 0, 0, tzinfo=timezone.utc),
+                expires_at=datetime(2026, 11, 24, 11, 0, 0, tzinfo=UTC),
             ),
         ),
     )
@@ -448,7 +459,9 @@ def test_hg10_agent_statement_gate() -> None:
         base_inputs,
         verification=replace(
             base_inputs.verification,
-            calculation=replace(base_inputs.verification.calculation, agent_stated_total_minor=5000000),
+            calculation=replace(
+                base_inputs.verification.calculation, agent_stated_total_minor=5000000
+            ),
         ),
     )
     hit = gate.evaluate(amt_mismatch)
@@ -459,7 +472,9 @@ def test_hg10_agent_statement_gate() -> None:
         base_inputs,
         verification=replace(
             base_inputs.verification,
-            calculation=replace(base_inputs.verification.calculation, agent_stated_merchant_id="mer_amazon_demo"),
+            calculation=replace(
+                base_inputs.verification.calculation, agent_stated_merchant_id="mer_amazon_demo"
+            ),
         ),
     )
     hit = gate.evaluate(merchant_mismatch)
@@ -595,7 +610,9 @@ def test_hg16_delivery_and_returns_gate() -> None:
         base_inputs,
         verification=replace(
             base_inputs.verification,
-            mandate_match=MandateMatchResult(satisfied=False, violations=("DELIVERY_REQUIREMENT_UNMET",)),
+            mandate_match=MandateMatchResult(
+                satisfied=False, violations=("DELIVERY_REQUIREMENT_UNMET",)
+            ),
         ),
     )
     hit = gate.evaluate(bad_delivery)
@@ -606,7 +623,9 @@ def test_hg16_delivery_and_returns_gate() -> None:
         base_inputs,
         verification=replace(
             base_inputs.verification,
-            mandate_match=MandateMatchResult(satisfied=False, violations=("RETURNS_REQUIREMENT_UNMET",)),
+            mandate_match=MandateMatchResult(
+                satisfied=False, violations=("RETURNS_REQUIREMENT_UNMET",)
+            ),
         ),
     )
     hit = gate.evaluate(bad_returns)
@@ -614,6 +633,7 @@ def test_hg16_delivery_and_returns_gate() -> None:
 
 
 # --- 3. Compound Attack Scenario Test ---
+
 
 def test_compound_attack_scenario_records_all_fired_gates() -> None:
     """Compound attack violating multiple safety invariants records ALL triggered gates.
@@ -641,9 +661,9 @@ def test_compound_attack_scenario_records_all_fired_gates() -> None:
             checkout=replace(
                 base_inputs.verification.checkout,
                 merchant_signature_valid=False,  # HG-05
-                currency="USD",                  # HG-06
-                amount_minor=99000000,           # HG-07
-                merchant_id="mer_attacker_shop", # HG-03
+                currency="USD",  # HG-06
+                amount_minor=99000000,  # HG-07
+                merchant_id="mer_attacker_shop",  # HG-03
             ),
         ),
     )
@@ -658,4 +678,6 @@ def test_compound_attack_scenario_records_all_fired_gates() -> None:
     # Every hard gate was evaluated and recorded
     fired_rule_ids = {hit.rule_id for hit in res.rules_fired}
     expected_rule_ids = {"HG-03", "HG-05", "HG-06", "HG-07", "HG-14"}
-    assert expected_rule_ids.issubset(fired_rule_ids), f"Missing expected rules: {expected_rule_ids - fired_rule_ids}"
+    assert expected_rule_ids.issubset(fired_rule_ids), (
+        f"Missing expected rules: {expected_rule_ids - fired_rule_ids}"
+    )

@@ -2,8 +2,8 @@
 
 Tests:
 1. Pure decide() isolation and Invariant INV-11.
-2. Single-attempt ALLOW evaluation, DB persistence, signature verification, and DECISION_MADE event.
-3. STEP_UP evaluation, ConfirmationModel creation, challenge computation, and STEP_UP_REQUESTED event.
+2. Single-attempt ALLOW evaluation, DB persistence, signature verification, DECISION_MADE event.
+3. STEP_UP evaluation, ConfirmationModel creation, challenge, STEP_UP_REQUESTED event.
 4. Hard gate BLOCK evaluation: trust_score is None, immediate expiry, no confirmation.
 5. Trust band BLOCK evaluation: emits DECISION_MADE and INCIDENT_LOGGED.
 6. Automatic RETRIEVE_MORE 2-attempt loop: attempt 1 recorded, refresh called, attempt 2 finalized.
@@ -12,24 +12,23 @@ Tests:
 9. Deterministic replay from snapshot.
 10. In-memory SQLite database persistence matching migration 0004.
 """
+
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from mandit.common import crypto, events, hashing, jcs
+from mandit.common import events, hashing
 from mandit.common.crypto import Ed25519Signer, verify_envelope
 from mandit.common.models import Base
-from mandit.policy.models import ConfirmationModel, DecisionModel
 from mandit.policy.repository import DecisionRepository
 from mandit.policy.schemas import (
     AgentContext,
     CalculationResult,
     CheckoutSnapshot,
-    ConfirmationSnapshot,
-    Decision,
     DecisionOutcome,
     EvaluationStage,
     FrozenDecisionInputs,
@@ -37,9 +36,7 @@ from mandit.policy.schemas import (
     MandateConstraints,
     MandateMatchResult,
     MandateSnapshot,
-    RiskSignal,
     RiskSummary,
-    RuleHit,
     SelectionResult,
     TrustResult,
     VerificationReport,
@@ -48,7 +45,6 @@ from mandit.policy.schemas import (
 from mandit.policy.service import (
     DecisionServiceImpl,
     DefaultPolicyEngine,
-    build_display_payload,
 )
 
 
@@ -74,7 +70,7 @@ def signer():
 @pytest.fixture
 def base_inputs():
     """Create standard compliant FrozenDecisionInputs for baseline testing."""
-    now = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 24, 12, 0, 0, tzinfo=UTC)
     future = now + timedelta(days=7)
 
     agent = AgentContext(
@@ -198,6 +194,7 @@ def clear_events():
 
 def test_allow_evaluation_persistence_and_signing(db_session, signer, base_inputs):
     """Test happy-path ALLOW decision: persistence, Ed25519 signing, and DECISION_MADE event."""
+
     async def _run():
         repo = DecisionRepository()
         engine = DefaultPolicyEngine()
@@ -265,7 +262,8 @@ def test_allow_evaluation_persistence_and_signing(db_session, signer, base_input
 
 
 def test_step_up_evaluation_and_confirmation_row_creation(db_session, signer, base_inputs):
-    """Test STEP_UP decision: creates pending confirmation row, challenge, and STEP_UP_REQUESTED event."""
+    """Test STEP_UP: creates pending confirmation row, challenge, and STEP_UP_REQUESTED event."""
+
     async def _run():
         repo = DecisionRepository()
         engine = DefaultPolicyEngine()
@@ -327,15 +325,21 @@ def test_step_up_evaluation_and_confirmation_row_creation(db_session, signer, ba
         assert conf_model.proposal_id == base_inputs.proposal_id
         assert conf_model.status == "PENDING"
         assert conf_model.response_signature is None
-        assert (conf_model.expires_at.replace(tzinfo=timezone.utc) if conf_model.expires_at.tzinfo is None else conf_model.expires_at) == decision.expires_at
+        assert (
+            conf_model.expires_at.replace(tzinfo=UTC)
+            if conf_model.expires_at.tzinfo is None
+            else conf_model.expires_at
+        ) == decision.expires_at
 
-        # 3. Verify Challenge computation: strictly sha256(JCS({display, proposal_hash, expires_at, confirmation_id}))
-        expected_challenge = hashing.digest({
-            "confirmation_id": decision.confirmation_id,
-            "display": conf_model.display,
-            "expires_at": decision.expires_at.isoformat(),
-            "proposal_hash": base_inputs.proposal_hash,
-        })
+        # 3. Verify Challenge: strictly sha256(JCS({display, proposal_hash, expires_at, cnf_id}))
+        expected_challenge = hashing.digest(
+            {
+                "confirmation_id": decision.confirmation_id,
+                "display": conf_model.display,
+                "expires_at": decision.expires_at.isoformat(),
+                "proposal_hash": base_inputs.proposal_hash,
+            }
+        )
         assert conf_model.challenge == expected_challenge
 
         # 4. Assertions on Events: STEP_UP_REQUESTED and DECISION_MADE
@@ -356,6 +360,7 @@ def test_step_up_evaluation_and_confirmation_row_creation(db_session, signer, ba
 
 def test_hard_gate_block_evaluation(db_session, signer, base_inputs):
     """Test hard gate BLOCK: trust score is None, immediate expiry, no confirmation."""
+
     async def _run():
         repo = DecisionRepository()
         engine = DefaultPolicyEngine()
@@ -410,7 +415,7 @@ def test_hard_gate_block_evaluation(db_session, signer, base_inputs):
         assert decision.expires_at == base_inputs.evaluated_at
         assert any(r.rule_id == "HG-07" for r in decision.rules_fired)
 
-        # Hard gate BLOCK emits DECISION_MADE only (INCIDENT_LOGGED is strictly for trust-band blocks)
+        # Hard gate BLOCK emits DECISION_MADE only (INCIDENT_LOGGED for trust-band blocks)
         emitted = events._default_emitter.emitted_events
         assert len(emitted) == 1
         assert emitted[0]["event_type"] == "DECISION_MADE"
@@ -422,6 +427,7 @@ def test_hard_gate_block_evaluation(db_session, signer, base_inputs):
 
 def test_trust_score_block_emits_incident_logged(db_session, signer, base_inputs):
     """Test trust band BLOCK: score < 0.50 emits DECISION_MADE and INCIDENT_LOGGED."""
+
     async def _run():
         repo = DecisionRepository()
         engine = DefaultPolicyEngine()
@@ -485,7 +491,8 @@ def test_trust_score_block_emits_incident_logged(db_session, signer, base_inputs
 
 
 def test_retrieve_more_two_attempt_flow(db_session, signer, base_inputs):
-    """Test automatic RETRIEVE_MORE flow: attempt 1 recorded, refresh called, attempt 2 finalized."""
+    """Test automatic RETRIEVE_MORE flow: attempt 1 recorded, refresh called, attempt 2 done."""
+
     async def _run():
         repo = DecisionRepository()
         engine = DefaultPolicyEngine()
@@ -542,7 +549,10 @@ def test_retrieve_more_two_attempt_flow(db_session, signer, base_inputs):
         # 2. Final returned decision is attempt 2, escalated to STEP_UP via TS-02
         assert final_decision.attempt == 2
         assert final_decision.outcome == DecisionOutcome.STEP_UP
-        assert any(r.rule_id == "TS-02" and r.code == "RETRIEVE_MORE_EXHAUSTED" for r in final_decision.rules_fired)
+        assert any(
+            r.rule_id == "TS-02" and r.code == "RETRIEVE_MORE_EXHAUSTED"
+            for r in final_decision.rules_fired
+        )
 
         # 3. Two DECISION_MADE events emitted (one for attempt 1, one for attempt 2)
         emitted = events._default_emitter.emitted_events
@@ -565,7 +575,8 @@ def test_retrieve_more_two_attempt_flow(db_session, signer, base_inputs):
 
 
 def test_retrieve_more_fail_safe_when_refresh_fails(db_session, signer, base_inputs):
-    """Test fail-safe RETRIEVE_MORE behavior: if refresh raises an error, system fails closed gracefully."""
+    """Test fail-safe RETRIEVE_MORE: if refresh fails, system fails closed gracefully."""
+
     async def _run():
         repo = DecisionRepository()
         engine = DefaultPolicyEngine()
@@ -625,6 +636,7 @@ def test_retrieve_more_fail_safe_when_refresh_fails(db_session, signer, base_inp
 
 def test_decision_service_get_retrieval(db_session, signer, base_inputs):
     """Test DecisionService.get(decision_id) retrieval."""
+
     async def _run():
         repo = DecisionRepository()
         engine = DefaultPolicyEngine()
@@ -648,7 +660,7 @@ def test_decision_service_get_retrieval(db_session, signer, base_inputs):
 
 
 def test_deterministic_replay_from_snapshot(base_inputs):
-    """Test Invariant INV-11: Replaying a stored transaction with its frozen inputs reproduces identical decision."""
+    """Test INV-11: Replaying transaction with frozen inputs reproduces identical decision."""
     engine = DefaultPolicyEngine()
 
     # Initial decision

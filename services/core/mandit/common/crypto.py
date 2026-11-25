@@ -5,12 +5,15 @@ Per docs/REFERENCE.md §8 and §11:
 - Signature envelope:
   {"alg": "Ed25519", "key_id": "...", "signed_digest": "sha256:...", "value": "<base64url>"}
 """
+
 import base64
 import re
 from typing import Any
+
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec, ed25519, utils
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+
 from mandit.common import hashing, jcs
 
 MANDIT_POLICY_KEY_ID = "mandit-policy-2026-11"
@@ -33,14 +36,12 @@ def b64url_decode(data: str) -> bytes:
 def decode_fixed_base64url(value: object, expected_size: int) -> bytes:
     """Decode a fixed-length base64url value strictly per RFC 7518 §6.2.1 and RFC 7638."""
     expected_len = (expected_size * 8 + 5) // 6
-    if (
-        not isinstance(value, str)
-        or len(value) != expected_len
-        or not _B64URL_RE.fullmatch(value)
-    ):
-        raise ValueError(
-            f"Invalid base64url: expected exactly {expected_len} characters matching alphabet [A-Za-z0-9_-]"
+    if not isinstance(value, str) or len(value) != expected_len or not _B64URL_RE.fullmatch(value):
+        msg = (
+            f"Invalid base64url: expected exactly {expected_len} characters "
+            "matching alphabet [A-Za-z0-9_-]"
         )
+        raise ValueError(msg)
     raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
     if b64url_encode(raw) != value:
         raise ValueError("Non-canonical base64url encoding")
@@ -122,10 +123,10 @@ class Ed25519Signer:
 
     def __init__(
         self,
-        private_key: ed25519.Ed25519PrivateKey | None = None,
+        key: ed25519.Ed25519PrivateKey | None = None,
         key_id: str = MANDIT_POLICY_KEY_ID,
     ):
-        self.private_key = private_key or ed25519.Ed25519PrivateKey.generate()
+        self.private_key = key or ed25519.Ed25519PrivateKey.generate()
         self.key_id = key_id
 
     @property

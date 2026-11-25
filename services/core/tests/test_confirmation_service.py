@@ -18,9 +18,11 @@ Tests:
 15. Correct event emission across all lifecycle transitions.
 16. Transaction rollback consistency.
 """
+
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
 import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -34,7 +36,6 @@ from mandit.confirmation.schemas import (
     ChallengeMismatchError,
     ConfirmationExpiredError,
     ConfirmationInvalidatedError,
-    ConfirmationNotFoundError,
     ConfirmationNotPendingError,
     ConfirmationOwnershipError,
     ConfirmationRespondRequest,
@@ -49,8 +50,6 @@ from mandit.policy.schemas import (
     AgentContext,
     CalculationResult,
     CheckoutSnapshot,
-    DecisionOutcome,
-    EvaluationStage,
     FrozenDecisionInputs,
     IdentityResult,
     MandateConstraints,
@@ -102,6 +101,7 @@ class MockGroundingService:
                 self.mandate_id = "man_test_01"
                 self.agent_id = "agent_test_01"
                 self.payment_method = "CARD_TOKEN"
+
         return Prop(self.proposal_hash)
 
     async def latest_verification(self, proposal_id: str) -> VerificationReport:
@@ -132,7 +132,11 @@ class MockGroundingService:
         )
 
 
-def generate_test_user_key(user_id: str = "usr_harsh_01", key_id: str = "ukey_01JD3Z0000DEMOUSERKEY0001", status: str = "ACTIVE") -> tuple[ec.EllipticCurvePrivateKey, UserKeyRecord]:
+def generate_test_user_key(
+    user_id: str = "usr_harsh_01",
+    key_id: str = "ukey_01JD3Z0000DEMOUSERKEY0001",
+    status: str = "ACTIVE",
+) -> tuple[ec.EllipticCurvePrivateKey, UserKeyRecord]:
     """Generate a test ECDSA P-256 key pair and corresponding UserKeyRecord."""
     private_key = ec.generate_private_key(ec.SECP256R1())
     public_numbers = private_key.public_key().public_numbers()
@@ -151,12 +155,14 @@ def generate_test_user_key(user_id: str = "usr_harsh_01", key_id: str = "ukey_01
         alg="ES256",
         jwk=jwk,
         status=status,  # type: ignore[arg-type]
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     return private_key, record
 
 
-def sign_challenge_es256(private_key: ec.EllipticCurvePrivateKey, key_id: str, challenge: str) -> dict[str, str]:
+def sign_challenge_es256(
+    private_key: ec.EllipticCurvePrivateKey, key_id: str, challenge: str
+) -> dict[str, str]:
     """Sign challenge string using ES256 and return canonical signature envelope."""
     # Signs UTF-8 bytes of challenge using ECDSA P-256 / SHA-256
     sig_bytes = private_key.sign(challenge.encode("utf-8"), ec.ECDSA(hashes.SHA256()))
@@ -191,7 +197,7 @@ def clear_events():
 @pytest.fixture
 def test_setup():
     """Setup base models, services, user keys, and confirmation row."""
-    now = datetime(2026, 11, 24, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 24, 12, 0, 0, tzinfo=UTC)
     future = now + timedelta(days=7)
     user_id = "usr_harsh_01"
     key_id = "ukey_01JD3Z0000DEMOUSERKEY0001"
@@ -227,7 +233,9 @@ def test_setup():
         credential_id="kya_credential_jwt_01",
         verified_at=now - timedelta(minutes=5),
     )
-    identity = IdentityResult(agent=agent, is_active=True, operator_verified=True, kya_token_valid=True, key_bound=True)
+    identity = IdentityResult(
+        agent=agent, is_active=True, operator_verified=True, kya_token_valid=True, key_bound=True
+    )
     constraints = MandateConstraints(
         allowed_merchants=("mer_croma_demo", "mer_croma_01"),
         allowed_domains=("croma.mock.mandit.local", "croma.example.com"),
@@ -306,12 +314,14 @@ def test_setup():
     display = build_display_payload(inputs, ())
     expires_at = now + timedelta(minutes=10)
     # Strictly 4 canonical fields: confirmation_id, display, expires_at, proposal_hash
-    challenge = hashing.digest({
-        "confirmation_id": confirmation_id,
-        "display": display,
-        "expires_at": expires_at.isoformat(),
-        "proposal_hash": proposal_hash,
-    })
+    challenge = hashing.digest(
+        {
+            "confirmation_id": confirmation_id,
+            "display": display,
+            "expires_at": expires_at.isoformat(),
+            "proposal_hash": proposal_hash,
+        }
+    )
 
     conf_model = ConfirmationModel(
         confirmation_id=confirmation_id,
@@ -344,7 +354,12 @@ def test_setup():
         inputs_hash="sha256:inputs_hash_01",
         confirmation_id=confirmation_id,
         expires_at=expires_at,
-        signature={"alg": "Ed25519", "key_id": "mandit-policy-2026-11", "signed_digest": "sha256:d", "value": "val"},
+        signature={
+            "alg": "Ed25519",
+            "key_id": "mandit-policy-2026-11",
+            "signed_digest": "sha256:d",
+            "value": "val",
+        },
         created_at=now,
     )
 
@@ -404,7 +419,11 @@ def test_setup():
 
 
 def test_valid_approval_and_policy_reevaluation(db_session, test_setup):
-    """Test 1: Valid approval produces ALLOW decision, stage=CONFIRMATION, events, and preserves initial decision."""
+    """Test 1: Valid approval produces ALLOW decision, stage=CONFIRMATION, events.
+
+    Also preserves initial decision.
+    """
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -467,6 +486,7 @@ def test_valid_approval_and_policy_reevaluation(db_session, test_setup):
 
 def test_valid_rejection(db_session, test_setup):
     """Test 2: Valid rejection marks confirmation REJECTED and emits CONFIRMATION_REJECTED."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -501,6 +521,7 @@ def test_valid_rejection(db_session, test_setup):
 
 def test_invalid_signature_rejected(db_session, test_setup):
     """Test 3: Corrupted or invalid signature raises SignatureInvalidError."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -525,6 +546,7 @@ def test_invalid_signature_rejected(db_session, test_setup):
 
 def test_challenge_mismatch_rejected(db_session, test_setup):
     """Test 4: Signature signed_digest not matching challenge raises ChallengeMismatchError."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -544,7 +566,8 @@ def test_challenge_mismatch_rejected(db_session, test_setup):
 
 
 def test_expired_confirmation_rejected(db_session, test_setup):
-    """Test 5: Responding after expiry transitions status to EXPIRED and raises ConfirmationExpiredError."""
+    """Test 5: Responding after expiry sets status to EXPIRED and raises error."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -574,6 +597,7 @@ def test_expired_confirmation_rejected(db_session, test_setup):
 
 def test_wrong_user_ownership_rejected(db_session, test_setup):
     """Test 6: Caller user ID mismatch raises ConfirmationOwnershipError."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -591,6 +615,7 @@ def test_wrong_user_ownership_rejected(db_session, test_setup):
 
 def test_revoked_key_rejected(db_session, test_setup):
     """Test 7: User key marked REVOKED raises UserKeyInvalidError."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -618,6 +643,7 @@ def test_revoked_key_rejected(db_session, test_setup):
 
 def test_proposal_hash_changed_invalidates_confirmation(db_session, test_setup):
     """Test 8: TOCTOU protection - changed proposal hash invalidates confirmation."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -650,6 +676,7 @@ def test_proposal_hash_changed_invalidates_confirmation(db_session, test_setup):
 
 def test_checkout_expired_invalidates_confirmation(db_session, test_setup):
     """Test 9: TOCTOU protection - expired checkout invalidates confirmation."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -691,6 +718,7 @@ def test_checkout_expired_invalidates_confirmation(db_session, test_setup):
 
 def test_duplicate_approval_rejected(db_session, test_setup):
     """Test 10: Calling approve twice raises ConfirmationNotPendingError on the second call."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -714,6 +742,7 @@ def test_duplicate_approval_rejected(db_session, test_setup):
 
 def test_approval_after_rejection_rejected(db_session, test_setup):
     """Test 11: Calling approve on an already rejected confirmation fails."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -721,18 +750,29 @@ def test_approval_after_rejection_rejected(db_session, test_setup):
         await repo.save_confirmation(db_session, s["conf_model"])
 
         # Reject first
-        await conf_svc.respond(db_session, s["confirmation_id"], s["user_id"], ConfirmationRespondRequest(response="REJECT"))
+        await conf_svc.respond(
+            db_session,
+            s["confirmation_id"],
+            s["user_id"],
+            ConfirmationRespondRequest(response="REJECT"),
+        )
 
         # Attempt to approve
         sig = sign_challenge_es256(s["priv_key"], s["key_id"], s["challenge"])
         with pytest.raises(ConfirmationNotPendingError):
-            await conf_svc.respond(db_session, s["confirmation_id"], s["user_id"], ConfirmationRespondRequest(response="APPROVE", signature=sig))
+            await conf_svc.respond(
+                db_session,
+                s["confirmation_id"],
+                s["user_id"],
+                ConfirmationRespondRequest(response="APPROVE", signature=sig),
+            )
 
     asyncio.run(_run())
 
 
 def test_concurrency_race_condition_handled_safely(db_session, test_setup):
     """Test 13: Concurrent approval and rejection: atomic CAS ensures exactly one succeeds."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -764,6 +804,7 @@ def test_concurrency_race_condition_handled_safely(db_session, test_setup):
 
 def test_hard_gate_block_cannot_be_overridden_by_user_approval(db_session, test_setup):
     """Test 14: Invariant INV-07 - Human confirmation never overrides a hard-gate BLOCK."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -805,7 +846,8 @@ def test_hard_gate_block_cannot_be_overridden_by_user_approval(db_session, test_
 
 
 def test_transaction_rollback_preserves_consistency(db_session, test_setup):
-    """Test 16: DB transaction rollback ensures no partial confirmation or decision state is saved."""
+    """Test 16: DB rollback ensures no partial confirmation or decision state is saved."""
+
     async def _run():
         s = test_setup
         repo: DecisionRepository = s["repo"]
@@ -830,7 +872,6 @@ def test_database_user_key_service(db_session):
     """Test DatabaseUserKeyService querying user_keys table."""
     from mandit.confirmation.models import UserKeyModel
     from mandit.confirmation.service import DatabaseUserKeyService
-    from mandit.common.crypto import load_es256_public_key_from_jwk
 
     async def _run():
         priv_key = ec.generate_private_key(ec.SECP256R1())
@@ -925,7 +966,9 @@ def test_es256_jwk_hardening_and_validation():
 
     # 5. Reject invalid characters in coordinate
     with pytest.raises(ValueError, match="matching alphabet"):
-        load_es256_public_key_from_jwk({**valid_jwk, "x": "invalid!characters!inside!base64url!string!"})
+        load_es256_public_key_from_jwk(
+            {**valid_jwk, "x": "invalid!characters!inside!base64url!string!"}
+        )
 
 
 def test_event_outbox_transactional_persistence(db_session):
@@ -947,6 +990,7 @@ def test_event_outbox_transactional_persistence(db_session):
 
         # Verify entry exists in event_outbox
         from sqlalchemy import select
+
         stmt = select(EventOutboxModel)
         result = db_session.execute(stmt).scalars().all()
         assert len(result) >= 1

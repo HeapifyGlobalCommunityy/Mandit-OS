@@ -4,6 +4,7 @@ Per docs/REFERENCE.md §8 and RFC 8785:
 - UTF-8 representation of JSON with strict key sorting
 - No whitespace outside strings (separators=(',', ':'))
 """
+
 import json
 from typing import Any
 

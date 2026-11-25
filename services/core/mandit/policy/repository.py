@@ -4,7 +4,7 @@ Provides DB operations using SQLAlchemy sessions conforming to migration 0004.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -48,12 +48,12 @@ class DecisionRepository:
         if hasattr(session, "get"):
             res = session.get(DecisionModel, decision_id)
             if hasattr(res, "__await__"):
-                return await res
-            return res
+                return cast(DecisionModel | None, await res)
+            return cast(DecisionModel | None, res)
         # Fallback using select
         stmt = select(DecisionModel).where(DecisionModel.decision_id == decision_id)
         result = await session.execute(stmt)
-        return result.scalar_one_or_none()
+        return cast(DecisionModel | None, result.scalar_one_or_none())
 
     async def save_confirmation(self, session: Any, confirmation: ConfirmationModel) -> None:
         """Persist a confirmation record."""
@@ -70,11 +70,11 @@ class DecisionRepository:
         if hasattr(session, "get"):
             res = session.get(ConfirmationModel, confirmation_id)
             if hasattr(res, "__await__"):
-                return await res
-            return res
+                return cast(ConfirmationModel | None, await res)
+            return cast(ConfirmationModel | None, res)
         stmt = select(ConfirmationModel).where(ConfirmationModel.confirmation_id == confirmation_id)
         result = await session.execute(stmt)
-        return result.scalar_one_or_none()
+        return cast(ConfirmationModel | None, result.scalar_one_or_none())
 
     async def update_confirmation_status_cas(
         self,

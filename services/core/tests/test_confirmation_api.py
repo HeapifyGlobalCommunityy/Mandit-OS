@@ -12,8 +12,10 @@ Verifies:
 5. Error status mapping (404, 403, 409, 400, 401).
 6. Success response serialization on APPROVE and REJECT.
 """
-from datetime import datetime, timedelta, timezone
+
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
 import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -27,14 +29,13 @@ from mandit.common.crypto import b64url_encode
 from mandit.common.models import Base
 from mandit.confirmation.api import (
     get_confirmation_service,
-    get_current_user_id,
     get_db_session,
     get_user_auth_service,
     router,
 )
 from mandit.confirmation.interface import UserAuthService
 from mandit.confirmation.models import ConfirmationModel, UserKeyModel
-from mandit.confirmation.schemas import AuthenticationError, UserKeyRecord
+from mandit.confirmation.schemas import AuthenticationError
 from mandit.confirmation.service import ConfirmationServiceImpl, DatabaseUserKeyService
 from mandit.policy.models import DecisionModel
 from mandit.policy.repository import DecisionRepository
@@ -42,8 +43,6 @@ from mandit.policy.schemas import (
     AgentContext,
     CalculationResult,
     CheckoutSnapshot,
-    DecisionOutcome,
-    EvaluationStage,
     FrozenDecisionInputs,
     IdentityResult,
     MandateConstraints,
@@ -54,7 +53,7 @@ from mandit.policy.schemas import (
     TrustResult,
     VerificationReport,
 )
-from mandit.policy.service import DecisionServiceImpl, DefaultPolicyEngine, build_display_payload
+from mandit.policy.service import DecisionServiceImpl, DefaultPolicyEngine
 
 
 class MockUserAuthService(UserAuthService):
@@ -67,34 +66,40 @@ class MockUserAuthService(UserAuthService):
 
 
 class DummyGroundingService:
-    def __init__(self, proposal_id: str, proposal_hash: str, checkout_expires_at: datetime | None = None):
+    def __init__(
+        self, proposal_id: str, proposal_hash: str, checkout_expires_at: datetime | None = None
+    ):
         self._proposal_id = proposal_id
         self._proposal_hash = proposal_hash
-        self._checkout_expires_at = checkout_expires_at or (datetime.now(timezone.utc) + timedelta(minutes=15))
+        self._checkout_expires_at = checkout_expires_at or (
+            datetime.now(UTC) + timedelta(minutes=15)
+        )
 
     async def get_proposal(self, proposal_id: str) -> Any:
         class Prop:
             def __init__(self, pid: str, phash: str):
                 self.proposal_id = pid
                 self.proposal_hash = phash
+
         return Prop(self._proposal_id, self._proposal_hash)
 
     async def latest_verification(self, proposal_id: str) -> Any:
         class Chk:
             def __init__(self, exp: datetime):
                 self.expires_at = exp
+
         class Verif:
             def __init__(self, exp: datetime):
                 self.checkout = Chk(exp)
+
         return Verif(self._checkout_expires_at)
 
 
 @pytest.fixture
 def test_setup():
     from sqlalchemy.pool import StaticPool
-    from mandit.policy.models import ConfirmationModel, DecisionModel
-    from mandit.confirmation.models import UserKeyModel
-    from mandit.common.events import EventOutboxModel
+
+    from mandit.policy.models import ConfirmationModel
 
     engine = create_engine(
         "sqlite:///:memory:",
@@ -106,7 +111,7 @@ def test_setup():
     Session = sessionmaker(bind=engine)
     session = Session()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     # Generate ES256 key for test user usr_alice
     user_private_key = ec.generate_private_key(ec.SECP256R1())
@@ -148,7 +153,12 @@ def test_setup():
         policy_version="policy-1.0.0",
         inputs_snapshot_id="snp_01",
         inputs_hash="sha256:inputshash01",
-        signature={"alg": "Ed25519", "key_id": "mandit-policy-2026-11", "signed_digest": "sha256:prop01hash", "value": "testsig"},
+        signature={
+            "alg": "Ed25519",
+            "key_id": "mandit-policy-2026-11",
+            "signed_digest": "sha256:prop01hash",
+            "value": "testsig",
+        },
         created_at=now,
         expires_at=now + timedelta(minutes=10),
     )
@@ -164,15 +174,23 @@ def test_setup():
         "total_minor": 11800,
         "currency": "INR",
         "payment_method": "CARD",
-        "reasons": [{"code": "ABOVE_APPROVAL_THRESHOLD", "template_id": "stepup.above_threshold", "params": {}}],
+        "reasons": [
+            {
+                "code": "ABOVE_APPROVAL_THRESHOLD",
+                "template_id": "stepup.above_threshold",
+                "params": {},
+            }
+        ],
     }
     expires_at = now + timedelta(minutes=10)
-    challenge = hashing.digest({
-        "confirmation_id": conf_id,
-        "display": display,
-        "expires_at": expires_at.isoformat(),
-        "proposal_hash": "sha256:prop01hash",
-    })
+    challenge = hashing.digest(
+        {
+            "confirmation_id": conf_id,
+            "display": display,
+            "expires_at": expires_at.isoformat(),
+            "proposal_hash": "sha256:prop01hash",
+        }
+    )
 
     conf = ConfirmationModel(
         confirmation_id=conf_id,
@@ -191,9 +209,13 @@ def test_setup():
     # Stub DecisionServiceImpl
     grounding = DummyGroundingService("prop_01", "sha256:prop01hash")
     policy_engine = DefaultPolicyEngine()
-    decision_service = DecisionServiceImpl(engine=policy_engine, repository=repo, grounding_service=grounding)
+    decision_service = DecisionServiceImpl(
+        engine=policy_engine, repository=repo, grounding_service=grounding
+    )
 
-    async def mock_build_inputs(proposal_id: str, session: Any = None, confirmation: Any = None, evaluated_at: Any = None):
+    async def mock_build_inputs(
+        proposal_id: str, session: Any = None, confirmation: Any = None, evaluated_at: Any = None
+    ):
         chk = CheckoutSnapshot(
             checkout_id="chk_01",
             checkout_hash="sha256:chkhash01",
@@ -241,13 +263,21 @@ def test_setup():
             scanner_version="scanner-1.0.0",
         )
         return FrozenDecisionInputs(
-            evaluated_at=evaluated_at or datetime.now(timezone.utc),
+            evaluated_at=evaluated_at or datetime.now(UTC),
             attempt=1,
             proposal_id=proposal_id,
             proposal_hash="sha256:prop01hash",
             transaction_id="txn_01",
             identity=IdentityResult(
-                agent=AgentContext(agent_id="agt_01", operator_id="op_01", key_id="k_01", key_thumbprint="tp", scopes=frozenset(["cart:write", "checkout:complete"]), credential_id="c_01", verified_at=now),
+                agent=AgentContext(
+                    agent_id="agt_01",
+                    operator_id="op_01",
+                    key_id="k_01",
+                    key_thumbprint="tp",
+                    scopes=frozenset(["cart:write", "checkout:complete"]),
+                    credential_id="c_01",
+                    verified_at=now,
+                ),
                 is_active=True,
                 operator_verified=True,
                 kya_token_valid=True,
@@ -286,7 +316,7 @@ def test_setup():
         decision_service=decision_service,
         grounding_service=grounding,
         user_key_service=db_user_key_service,
-        now_fn=lambda: datetime.now(timezone.utc),
+        now_fn=lambda: datetime.now(UTC),
     )
 
     # Build FastAPI test app
@@ -329,7 +359,9 @@ def test_http_auth_fail_closed_by_default():
     # Calling with unverified Authorization header -> 401 FailClosedUserAuthService
     resp = client.get("/v1/confirmations/cnf_123", headers={"Authorization": "Bearer usr_alice"})
     assert resp.status_code == 401
-    assert "User session authentication provider is not configured" in resp.json()["detail"]["message"]
+    assert (
+        "User session authentication provider is not configured" in resp.json()["detail"]["message"]
+    )
 
 
 def test_http_get_confirmation_success(test_setup):
@@ -381,7 +413,7 @@ def test_http_get_confirmation_lazy_expiry(test_setup):
     client = test_setup["client"]
 
     # Manually set expires_at in the past
-    past_time = datetime.now(timezone.utc) - timedelta(minutes=5)
+    past_time = datetime.now(UTC) - timedelta(minutes=5)
     conf = session.get(ConfirmationModel, conf_id)
     conf.expires_at = past_time
     session.commit()

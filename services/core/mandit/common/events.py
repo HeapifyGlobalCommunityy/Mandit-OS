@@ -1,18 +1,22 @@
 """Shared event emission client maintained per docs/modules/05-evidence-and-experience.md."""
-from datetime import datetime, timezone
-from typing import Any
+
 import uuid
-from sqlalchemy import Column, DateTime, Integer, JSON
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import JSON, Column, DateTime, Integer
+
 from mandit.common.models import Base
 
 
 class EventOutboxModel(Base):
     """SQLAlchemy model for event_outbox table matching migration 0005_evidence_ledger.py."""
+
     __tablename__ = "event_outbox"
 
     outbox_id = Column(Integer, primary_key=True, autoincrement=True)
     event_draft = Column(JSON, nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
     appended_at = Column(DateTime(timezone=True), nullable=True)
 
 
@@ -34,7 +38,7 @@ class EventEmitter:
         payload: dict[str, Any],
     ) -> str:
         event_id = f"evt_{uuid.uuid4().hex}"
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         event_record = {
             "event_id": event_id,
             "transaction_id": transaction_id,
