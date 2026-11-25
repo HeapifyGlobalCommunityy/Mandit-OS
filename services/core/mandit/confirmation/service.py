@@ -7,8 +7,10 @@ from mandit.common.crypto import (
     load_es256_public_key_from_jwk,
     verify_es256_signature,
 )
-from mandit.confirmation.interface import ConfirmationService, UserKeyService
+from mandit.confirmation.interface import ConfirmationService, UserAuthService, UserKeyService
+from mandit.confirmation.models import ConfirmationModel, UserKeyModel, ensure_tz
 from mandit.confirmation.schemas import (
+    AuthenticationError,
     ChallengeMismatchError,
     ConfirmationExpiredError,
     ConfirmationInvalidatedError,
@@ -19,11 +21,116 @@ from mandit.confirmation.schemas import (
     ConfirmationRespondResponse,
     SignatureInvalidError,
     UserKeyInvalidError,
+    UserKeyRecord,
 )
-from mandit.policy.models import ConfirmationModel, ensure_tz
 from mandit.policy.repository import DecisionRepository
 from mandit.policy.schemas import ConfirmationSnapshot
 from mandit.policy.service import DecisionServiceImpl
+from sqlalchemy import select
+
+
+class FailClosedUserAuthService(UserAuthService):
+    """Fail-closed implementation of UserAuthService.
+
+    Rejects all requests with 401 UNAUTHORIZED until a real gateway/console
+    session JWT verifier is injected. Never trusts client identity headers.
+    """
+
+    async def authenticate_user(self, authorization: str | None) -> str:
+        raise AuthenticationError(
+            "User session authentication provider is not configured. "
+            "Gateway/identity session verification is required."
+        )
+
+
+class DatabaseUserKeyService(UserKeyService):
+    """Persistent database adapter for user_keys table (migration 0001).
+
+    Verifies user ownership, ES256 algorithm, ACTIVE status, and JWK validity.
+    """
+
+    def __init__(self, session_factory_or_session: Any = None) -> None:
+        self.session_or_factory = session_factory_or_session
+
+    def _get_session(self, session: Any = None) -> Any:
+        if session is not None:
+            return session
+        if callable(self.session_or_factory):
+            return self.session_or_factory()
+        return self.session_or_factory
+
+    async def get_key(self, key_id: str, session: Any = None) -> UserKeyRecord | None:
+        sess = self._get_session(session)
+        if sess is None:
+            raise ValueError("Database session required for DatabaseUserKeyService")
+
+        model: UserKeyModel | None = None
+        if hasattr(sess, "get"):
+            res = sess.get(UserKeyModel, key_id)
+            model = await res if hasattr(res, "__await__") else res
+        else:
+            stmt = select(UserKeyModel).where(UserKeyModel.key_id == key_id)
+            res = sess.execute(stmt)
+            if hasattr(res, "__await__"):
+                res = await res
+            model = res.scalar_one_or_none()
+
+        if model is None:
+            return None
+
+        # JWK validation (validates coordinates, curve, absence of 'd')
+        try:
+            load_es256_public_key_from_jwk(model.jwk)
+        except Exception:
+            return None
+
+        return UserKeyRecord(
+            key_id=model.key_id,
+            user_id=model.user_id,
+            alg=model.alg,
+            jwk=model.jwk,
+            status=model.status,
+            created_at=ensure_tz(model.created_at) or datetime.now(timezone.utc),
+        )
+
+    async def get_active_key(self, user_id: str, session: Any = None) -> UserKeyRecord | None:
+        sess = self._get_session(session)
+        if sess is None:
+            raise ValueError("Database session required for DatabaseUserKeyService")
+
+        stmt = (
+            select(UserKeyModel)
+            .where(
+                UserKeyModel.user_id == user_id,
+                UserKeyModel.status == "ACTIVE",
+                UserKeyModel.alg == "ES256",
+            )
+            .order_by(UserKeyModel.created_at.desc())
+        )
+        res = sess.execute(stmt)
+        if hasattr(res, "__await__"):
+            res = await res
+
+        if hasattr(res, "scalars"):
+            models = res.scalars().all()
+        else:
+            models = res.fetchall()
+
+        for m in models:
+            row = m[0] if isinstance(m, tuple) else m
+            try:
+                load_es256_public_key_from_jwk(row.jwk)
+                return UserKeyRecord(
+                    key_id=row.key_id,
+                    user_id=row.user_id,
+                    alg=row.alg,
+                    jwk=row.jwk,
+                    status=row.status,
+                    created_at=ensure_tz(row.created_at) or datetime.now(timezone.utc),
+                )
+            except Exception:
+                continue
+        return None
 
 
 class ConfirmationServiceImpl(ConfirmationService):
@@ -172,7 +279,10 @@ class ConfirmationServiceImpl(ConfirmationService):
                     raise ChallengeMismatchError("Signature signed_digest does not match stored challenge")
                 key_id = req.signature.get("key_id")
             elif self.user_key_service is not None:
-                active_key = await self.user_key_service.get_active_key(caller_user_id)
+                try:
+                    active_key = await self.user_key_service.get_active_key(caller_user_id, session=session)
+                except TypeError:
+                    active_key = await self.user_key_service.get_active_key(caller_user_id)
                 if active_key is not None:
                     key_id = active_key.key_id
 
@@ -225,7 +335,10 @@ class ConfirmationServiceImpl(ConfirmationService):
         if self.user_key_service is None:
             raise UserKeyInvalidError("UserKeyService not configured")
 
-        user_key = await self.user_key_service.get_key(key_id)
+        try:
+            user_key = await self.user_key_service.get_key(key_id, session=session)
+        except TypeError:
+            user_key = await self.user_key_service.get_key(key_id)
         if (
             user_key is None
             or user_key.user_id != caller_user_id

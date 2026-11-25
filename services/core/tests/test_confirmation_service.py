@@ -824,3 +824,136 @@ def test_transaction_rollback_preserves_consistency(db_session, test_setup):
         assert conf is not None and conf.status == "PENDING"
 
     asyncio.run(_run())
+
+
+def test_database_user_key_service(db_session):
+    """Test DatabaseUserKeyService querying user_keys table."""
+    from mandit.confirmation.models import UserKeyModel
+    from mandit.confirmation.service import DatabaseUserKeyService
+    from mandit.common.crypto import load_es256_public_key_from_jwk
+
+    async def _run():
+        priv_key = ec.generate_private_key(ec.SECP256R1())
+        pub_numbers = priv_key.public_key().public_numbers()
+        x_bytes = pub_numbers.x.to_bytes(32, "big")
+        y_bytes = pub_numbers.y.to_bytes(32, "big")
+        valid_jwk = {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": b64url_encode(x_bytes),
+            "y": b64url_encode(y_bytes),
+        }
+
+        # Insert active key
+        key1 = UserKeyModel(
+            key_id="ukey_db_01",
+            user_id="usr_db_test",
+            alg="ES256",
+            jwk=valid_jwk,
+            status="ACTIVE",
+        )
+        # Insert revoked key
+        key2 = UserKeyModel(
+            key_id="ukey_db_02",
+            user_id="usr_db_test",
+            alg="ES256",
+            jwk=valid_jwk,
+            status="REVOKED",
+        )
+        db_session.add_all([key1, key2])
+        db_session.commit()
+
+        service = DatabaseUserKeyService(session_factory_or_session=db_session)
+
+        # 1. get_key for active key
+        rec1 = await service.get_key("ukey_db_01", session=db_session)
+        assert rec1 is not None
+        assert rec1.key_id == "ukey_db_01"
+        assert rec1.status == "ACTIVE"
+
+        # 2. get_key for revoked key
+        rec2 = await service.get_key("ukey_db_02", session=db_session)
+        assert rec2 is not None
+        assert rec2.status == "REVOKED"
+
+        # 3. get_active_key returns the active key, ignoring revoked
+        active = await service.get_active_key("usr_db_test", session=db_session)
+        assert active is not None
+        assert active.key_id == "ukey_db_01"
+
+        # 4. non-existent key
+        none_key = await service.get_key("ukey_nonexistent", session=db_session)
+        assert none_key is None
+
+    asyncio.run(_run())
+
+
+def test_es256_jwk_hardening_and_validation():
+    """Test cryptographic hardening of load_es256_public_key_from_jwk."""
+    from mandit.common.crypto import load_es256_public_key_from_jwk
+
+    priv_key = ec.generate_private_key(ec.SECP256R1())
+    pub_numbers = priv_key.public_key().public_numbers()
+    x_bytes = pub_numbers.x.to_bytes(32, "big")
+    y_bytes = pub_numbers.y.to_bytes(32, "big")
+
+    valid_jwk = {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": b64url_encode(x_bytes),
+        "y": b64url_encode(y_bytes),
+    }
+
+    # 1. Valid JWK loads successfully
+    pub = load_es256_public_key_from_jwk(valid_jwk)
+    assert isinstance(pub, ec.EllipticCurvePublicKey)
+
+    # 2. Reject if private parameter 'd' is present
+    with pytest.raises(ValueError, match="private key parameter 'd' must not be present"):
+        load_es256_public_key_from_jwk({**valid_jwk, "d": "some_secret_d"})
+
+    # 3. Reject wrong kty or crv
+    with pytest.raises(ValueError, match="expected kty='EC'"):
+        load_es256_public_key_from_jwk({**valid_jwk, "kty": "RSA"})
+    with pytest.raises(ValueError, match="expected kty='EC', crv='P-256'"):
+        load_es256_public_key_from_jwk({**valid_jwk, "crv": "P-384"})
+
+    # 4. Reject coordinate with wrong length (not 32 bytes)
+    short_x = b64url_encode(b"too_short")
+    with pytest.raises(ValueError, match="expected exactly 43 characters"):
+        load_es256_public_key_from_jwk({**valid_jwk, "x": short_x})
+
+    # 5. Reject invalid characters in coordinate
+    with pytest.raises(ValueError, match="matching alphabet"):
+        load_es256_public_key_from_jwk({**valid_jwk, "x": "invalid!characters!inside!base64url!string!"})
+
+
+def test_event_outbox_transactional_persistence(db_session):
+    """Test that events.emit writes to event_outbox table when mapped."""
+    from mandit.common.events import EventOutboxModel
+
+    async def _run():
+        events.clear()
+        evt_id = await events.emit(
+            db_session,
+            transaction_id="txn_outbox_test",
+            event_type="TEST_EVENT",
+            producer="test",
+            actor={"type": "SERVICE", "id": "test_actor"},
+            refs={"key": "val"},
+            payload={"test_param": 123},
+        )
+        db_session.commit()
+
+        # Verify entry exists in event_outbox
+        from sqlalchemy import select
+        stmt = select(EventOutboxModel)
+        result = db_session.execute(stmt).scalars().all()
+        assert len(result) >= 1
+        draft = result[-1].event_draft
+        assert draft["event_id"] == evt_id
+        assert draft["event_type"] == "TEST_EVENT"
+        assert draft["transaction_id"] == "txn_outbox_test"
+        assert draft["payload"]["test_param"] == 123
+
+    asyncio.run(_run())

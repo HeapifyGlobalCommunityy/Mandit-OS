@@ -6,6 +6,7 @@ Per docs/REFERENCE.md §8 and §11:
   {"alg": "Ed25519", "key_id": "...", "signed_digest": "sha256:...", "value": "<base64url>"}
 """
 import base64
+import re
 from typing import Any
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, utils
@@ -13,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from mandit.common import hashing, jcs
 
 MANDIT_POLICY_KEY_ID = "mandit-policy-2026-11"
+_B64URL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def b64url_encode(data: bytes) -> str:
@@ -20,22 +22,62 @@ def b64url_encode(data: bytes) -> str:
 
 
 def b64url_decode(data: str) -> bytes:
+    if not isinstance(data, str) or not data:
+        raise ValueError("Base64URL input must be a non-empty string")
     pad = len(data) % 4
     if pad:
         data += "=" * (4 - pad)
     return base64.urlsafe_b64decode(data.encode("ascii"))
 
 
+def decode_fixed_base64url(value: object, expected_size: int) -> bytes:
+    """Decode a fixed-length base64url value strictly per RFC 7518 §6.2.1 and RFC 7638."""
+    expected_len = (expected_size * 8 + 5) // 6
+    if (
+        not isinstance(value, str)
+        or len(value) != expected_len
+        or not _B64URL_RE.fullmatch(value)
+    ):
+        raise ValueError(
+            f"Invalid base64url: expected exactly {expected_len} characters matching alphabet [A-Za-z0-9_-]"
+        )
+    raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    if b64url_encode(raw) != value:
+        raise ValueError("Non-canonical base64url encoding")
+    if len(raw) != expected_size:
+        raise ValueError(f"Decoded size mismatch: expected {expected_size} bytes, got {len(raw)}")
+    return raw
+
+
 def load_es256_public_key_from_jwk(jwk: dict[str, Any]) -> ec.EllipticCurvePublicKey:
-    """Load an ECDSA P-256 public key from a JWK dict."""
+    """Load an ECDSA P-256 public key from a JWK dict strictly per RFC 7518 §6.2.1.
+
+    Requires:
+    - kty == 'EC', crv == 'P-256'
+    - 'd' parameter must NOT be present (reject private keys)
+    - 'x' and 'y' must be strictly 43-char base64url strings decoding to 32 bytes each
+    - Coordinates must represent a valid point on NIST P-256 (SECP256R1)
+    """
+    if not isinstance(jwk, dict):
+        raise ValueError(f"Expected JWK to be a dict, got {type(jwk).__name__}")
+    if "d" in jwk:
+        raise ValueError("Invalid public JWK: private key parameter 'd' must not be present")
     if jwk.get("kty") != "EC" or jwk.get("crv") != "P-256":
         raise ValueError(f"Invalid JWK: expected kty='EC', crv='P-256', got {jwk}")
-    x_bytes = b64url_decode(jwk["x"])
-    y_bytes = b64url_decode(jwk["y"])
+
+    try:
+        x_bytes = decode_fixed_base64url(jwk.get("x"), 32)
+        y_bytes = decode_fixed_base64url(jwk.get("y"), 32)
+    except Exception as exc:
+        raise ValueError(f"Invalid coordinate in JWK: {exc}") from exc
+
     x_int = int.from_bytes(x_bytes, "big")
     y_int = int.from_bytes(y_bytes, "big")
-    point = ec.EllipticCurvePublicNumbers(x_int, y_int, ec.SECP256R1())
-    return point.public_key()
+    try:
+        point = ec.EllipticCurvePublicNumbers(x_int, y_int, ec.SECP256R1())
+        return point.public_key()
+    except Exception as exc:
+        raise ValueError(f"Invalid EC point on curve SECP256R1: {exc}") from exc
 
 
 def parse_es256_signature(sig_bytes: bytes) -> bytes:

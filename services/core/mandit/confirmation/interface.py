@@ -49,3 +49,23 @@ class ConfirmationService(Protocol):
     ) -> ConfirmationModel | None:
         """Check expiry and transition to EXPIRED if past expiry time."""
         ...
+
+
+class UserAuthService(Protocol):
+    """Protocol for user authentication (Phase 1: console session JWT / session cookie).
+
+    Per REFERENCE.md §8.2 and §10:
+    - Verifies 'Bearer <session-jwt>' supplied by console users.
+    - Validates signature, expiry, and issuer/audience.
+    - Returns the verified user_id (e.g. 'usr_...').
+    - Raises AuthenticationError or returns None on any failure.
+    - MUST NOT trust unverified client-supplied headers (e.g. raw 'X-User-ID').
+    """
+
+    async def authenticate_user(self, authorization: str | None) -> str:
+        """Authenticate request credentials and return authenticated user_id.
+
+        Raises:
+            AuthenticationError: if header is missing, malformed, expired, or invalid.
+        """
+        ...

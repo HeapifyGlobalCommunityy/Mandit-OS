@@ -1,7 +1,8 @@
 """Mandit OS Human Confirmation Module."""
-from mandit.confirmation.interface import ConfirmationService, UserKeyService
-from mandit.confirmation.models import ConfirmationModel
+from mandit.confirmation.interface import ConfirmationService, UserAuthService, UserKeyService
+from mandit.confirmation.models import ConfirmationModel, UserKeyModel
 from mandit.confirmation.schemas import (
+    AuthenticationError,
     ChallengeMismatchError,
     ConfirmationError,
     ConfirmationExpiredError,
@@ -17,9 +18,14 @@ from mandit.confirmation.schemas import (
     UserKeyInvalidError,
     UserKeyRecord,
 )
-from mandit.confirmation.service import ConfirmationServiceImpl
+from mandit.confirmation.service import (
+    ConfirmationServiceImpl,
+    DatabaseUserKeyService,
+    FailClosedUserAuthService,
+)
 
 __all__ = [
+    "AuthenticationError",
     "ChallengeMismatchError",
     "ConfirmationError",
     "ConfirmationExpiredError",
@@ -33,9 +39,13 @@ __all__ = [
     "ConfirmationService",
     "ConfirmationServiceImpl",
     "ConfirmationStatus",
+    "DatabaseUserKeyService",
+    "FailClosedUserAuthService",
     "SignatureEnvelope",
     "SignatureInvalidError",
+    "UserAuthService",
     "UserKeyInvalidError",
+    "UserKeyModel",
     "UserKeyRecord",
     "UserKeyService",
 ]

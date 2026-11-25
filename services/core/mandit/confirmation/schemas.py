@@ -121,3 +121,8 @@ class SignatureInvalidError(ConfirmationError):
 class UserKeyInvalidError(ConfirmationError):
     def __init__(self, message: str = "User signing key is invalid or revoked", code: str = "USER_KEY_INVALID"):
         super().__init__(message, code=code, status_code=403)
+
+
+class AuthenticationError(ConfirmationError):
+    def __init__(self, message: str = "Missing or invalid authentication credentials", code: str = "UNAUTHORIZED"):
+        super().__init__(message, code=code, status_code=401)
