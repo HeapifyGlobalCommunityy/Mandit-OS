@@ -3,13 +3,13 @@
 Matches migration 0004_policy_and_payments.py exactly.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
+
 from sqlalchemy import (
-    Column,
+    JSON,
     DateTime,
     Integer,
-    JSON,
     Numeric,
     Text,
 )
@@ -25,13 +25,13 @@ from mandit.policy.schemas import (
 
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def ensure_tz(dt: Any) -> datetime | None:
     if isinstance(dt, datetime):
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
+            return dt.replace(tzinfo=UTC)
         return dt
     return None
 
@@ -41,34 +41,37 @@ class DecisionModel(Base):
 
     __tablename__ = "decisions"
 
-    decision_id = Column(Text, primary_key=True)
-    proposal_id = Column(Text, nullable=False)
-    proposal_hash = Column(Text, nullable=False)
-    transaction_id = Column(Text, nullable=False)
-    attempt = Column(Integer, nullable=False)
-    outcome = Column(Text, nullable=False)
-    stage = Column(Text, nullable=False)
-    rules_fired = Column(JSON, nullable=False)
-    trust_score = Column(Numeric(4, 3), nullable=True)
-    policy_version = Column(Text, nullable=False)
-    trust_model_version = Column(Text, nullable=True)
-    inputs_snapshot_id = Column(Text, nullable=False)
-    inputs_hash = Column(Text, nullable=False)
-    confirmation_id = Column(Text, nullable=True)
-    expires_at = Column(DateTime(timezone=True), nullable=False)
-    signature = Column(JSON, nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=now_utc)
+    decision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(Text, nullable=False)
+    proposal_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    transaction_id: Mapped[str] = mapped_column(Text, nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    stage: Mapped[str] = mapped_column(Text, nullable=False)
+    rules_fired: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    trust_score: Mapped[float | None] = mapped_column(Numeric(4, 3), nullable=True)
+    policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    trust_model_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    inputs_snapshot_id: Mapped[str] = mapped_column(Text, nullable=False)
+    inputs_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    confirmation_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    signature: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=now_utc
+    )
 
     def to_schema(self) -> Decision:
         """Convert SQLAlchemy model to canonical Decision dataclass."""
+        raw_rules = self.rules_fired or []
         rules = tuple(
             RuleHit(
-                rule_id=r["rule_id"],
-                code=r["code"],
-                effect=DecisionOutcome(r["effect"]),
+                rule_id=str(r["rule_id"]),
+                code=str(r["code"]),
+                effect=DecisionOutcome(str(r["effect"])),
                 detail=r.get("detail"),
             )
-            for r in (self.rules_fired or [])
+            for r in raw_rules
         )
         return Decision(
             decision_id=self.decision_id,
@@ -85,9 +88,9 @@ class DecisionModel(Base):
             inputs_snapshot_id=self.inputs_snapshot_id,
             inputs_hash=self.inputs_hash,
             confirmation_id=self.confirmation_id,
-            expires_at=ensure_tz(self.expires_at),  # type: ignore[arg-type]
+            expires_at=ensure_tz(self.expires_at) or self.expires_at,
             signature=self.signature,
-            created_at=ensure_tz(self.created_at),  # type: ignore[arg-type]
+            created_at=ensure_tz(self.created_at) or self.created_at,
         )
 
     @classmethod
