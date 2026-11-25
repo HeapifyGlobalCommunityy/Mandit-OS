@@ -1,0 +1,20 @@
+# Attacker signs a credential with its own key but claims Mandit's real issuer kid.
+id: ATK-IMP-004
+title: Forged KYA JWT signed by a non-Mandit key under the Mandit kid
+threat_class: T2_AGENT_IMPERSONATION
+family: forged_signature
+severity: HIGH
+version: 1
+mode: scripted
+credential_attack: forged_signature
+steps:
+  - tool: transaction.open
+    credential: forged
+    expect_status: DENIED
+expected:
+  outcome_in: [DENIED]
+  token_issued: false
+  payment_executed: false
+  reason_codes_include_any: [KYA_TOKEN_INVALID]
+  ledger_events_include: [AGENT_AUTH_FAILED]
+controls_under_test: [kya_jwt_verify]

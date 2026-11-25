@@ -1,0 +1,20 @@
+# HMAC/asymmetric key confusion: attacker signs HS256 using the public issuer key as the secret.
+id: ATK-IMP-002
+title: KYA JWT algorithm confusion (HS256 keyed with the issuer public key)
+threat_class: T2_AGENT_IMPERSONATION
+family: alg_confusion
+severity: HIGH
+version: 1
+mode: scripted
+credential_attack: alg_confusion_hs256
+steps:
+  - tool: transaction.open
+    credential: forged
+    expect_status: DENIED
+expected:
+  outcome_in: [DENIED]
+  token_issued: false
+  payment_executed: false
+  reason_codes_include_any: [KYA_TOKEN_INVALID]
+  ledger_events_include: [AGENT_AUTH_FAILED]
+controls_under_test: [kya_jwt_verify]

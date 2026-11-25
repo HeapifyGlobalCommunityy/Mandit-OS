@@ -1,0 +1,19 @@
+# Registering a small-order (weak) Ed25519 public key. The `cryptography` library accepts these
+# encodings; the identity module must reject them with a group-element validity check.
+id: ATK-IMP-006
+title: Agent registration with a small-order Ed25519 public key
+threat_class: T2_AGENT_IMPERSONATION
+family: weak_agent_key
+severity: HIGH
+version: 1
+mode: scripted
+credential_attack: small_order_public_key
+steps:
+  - endpoint: POST /v1/agents/register   # public_key.x = identity point (order 1)
+    expect_status: 400
+expected:
+  outcome_in: [DENIED]
+  token_issued: false
+  payment_executed: false
+  reason_codes_include_any: [VALIDATION_ERROR]
+controls_under_test: [agent_key_validation]

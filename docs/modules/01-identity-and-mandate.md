@@ -35,12 +35,12 @@ Team 1 builds the **authorization foundation** of Mandit OS. Identity answers *w
 
 ```python
 # services/core/mandit/identity/interface.py
-class IdentityService(Protocol):
-    async def verify_request(self, request: Request) -> AgentContext:
+class IdentityService[RequestT, AgentT](Protocol):
+    async def verify_request(self, request: RequestT) -> AgentContext:
         """Verify KYA JWT + RFC 9421 signature + nonce + timestamp + digest.
         Raises IdentityError(code=...) on any failure. Never returns a partial context."""
 
-    async def get_agent(self, agent_id: str) -> Agent: ...
+    async def get_agent(self, agent_id: str) -> AgentT: ...
     async def is_active(self, agent_id: str, key_id: str | None = None) -> bool: ...
 
 @dataclass(frozen=True)
@@ -53,6 +53,8 @@ class AgentContext:
     credential_id: str           # jti of the KYA JWT
     verified_at: datetime
 ```
+
+`RequestT` and `AgentT` are type parameters because the HTTP framework request type and the agent registry record do not exist yet. The integration layer binds them (for example `IdentityService[starlette.requests.Request, Agent]`). Method names, arguments, return types and error behaviour are as specified above. `AgentContext` and `IdentityError` are published in `identity/schemas.py`; consumers should import them from there rather than keep local copies.
 
 ```python
 # services/core/mandit/mandates/interface.py
