@@ -5,6 +5,7 @@ precedence hierarchies, and confirmation resolution.
 """
 
 from datetime import UTC, datetime
+from typing import Any, Literal
 
 from mandit.policy.rules import (
     SU01ApprovalThresholdRule,
@@ -40,9 +41,9 @@ def create_baseline_inputs(
     amount_minor: int = 4000000,
     approval_threshold_minor: int = 5000000,
     user_merchant_history: int = 5,
-    site_risk_level: str = "LOW",
-    max_injection_severity: str = "NONE",
-    claims: tuple[dict, ...] = (),
+    site_risk_level: Literal["LOW", "MEDIUM", "HIGH"] = "LOW",
+    max_injection_severity: Literal["NONE", "LOW", "MEDIUM", "HIGH"] = "NONE",
+    claims: tuple[dict[str, Any], ...] = (),
     pricier_alternative_chosen: bool = False,
     trust_score: float = 0.95,
     attempt: int = 1,
