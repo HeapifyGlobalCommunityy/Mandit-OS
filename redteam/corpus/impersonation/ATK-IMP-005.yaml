@@ -1,0 +1,21 @@
+# Impersonator holds a victim's genuine KYA JWT but not the victim's private key, so it signs
+# requests with its own key. The credential's cnf.jkt does not match the signing key.
+id: ATK-IMP-005
+title: Stolen KYA JWT used with the attacker's own signing key
+threat_class: T2_AGENT_IMPERSONATION
+family: stolen_jwt_without_key
+severity: HIGH
+version: 1
+mode: scripted
+credential_attack: stolen_jwt_wrong_key
+steps:
+  - tool: transaction.open
+    credential: stolen                   # genuine victim JWT; request signed with attacker key
+    expect_status: DENIED
+expected:
+  outcome_in: [DENIED]
+  token_issued: false
+  payment_executed: false
+  reason_codes_include_any: [KEY_NOT_BOUND]
+  ledger_events_include: [AGENT_AUTH_FAILED]
+controls_under_test: [kya_jwt_verify, key_binding]

@@ -1,0 +1,20 @@
+# Unsigned KYA credential (alg "none") presented to the gateway.
+id: ATK-IMP-001
+title: Unsigned KYA JWT with alg none
+threat_class: T2_AGENT_IMPERSONATION     # REFERENCE Appendix C
+family: alg_none
+severity: HIGH
+version: 1
+mode: scripted
+credential_attack: alg_none              # replayed today by services/core/tests/identity
+steps:
+  - tool: transaction.open
+    credential: forged                   # KYA JWT re-encoded with {"alg": "none"} and no signature
+    expect_status: DENIED
+expected:
+  outcome_in: [DENIED]
+  token_issued: false
+  payment_executed: false
+  reason_codes_include_any: [KYA_TOKEN_INVALID]
+  ledger_events_include: [AGENT_AUTH_FAILED]
+controls_under_test: [kya_jwt_verify]
