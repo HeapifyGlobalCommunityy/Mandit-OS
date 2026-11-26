@@ -1,6 +1,7 @@
 # safety
 
 Local design notes for this module. Spec: see docs/modules/02-safety-scanning.md.
+Status, checklist and how other teams use this module: see docs/guides/safety-scanning-guide.md.
 
 ## Web Safety Scanner (`site_scan/`)
 
