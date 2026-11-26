@@ -120,7 +120,7 @@ CREATE TABLE injection_findings (
   confidence      NUMERIC(4,3) NOT NULL
 );
 
-CREATE TABLE domain_reputation (                    -- fixture-backed in Phase 1
+CREATE TABLE domain_reputation (                    -- not used yet: fixtures and live lookups (§6.3)
   domain          TEXT PRIMARY KEY,
   first_seen      DATE,
   reputation      TEXT NOT NULL CHECK (reputation IN ('GOOD','UNKNOWN','BAD')),
@@ -301,40 +301,110 @@ Request:
 { "url": "https://fastlaptopdeals.example.com/checkout", "html": "<optional raw html>", "transaction_id": "txn_..." }
 ```
 
+Request rules:
+
+- `url` is required, at most 2048 characters, with an `http` or `https` scheme.
+- `html` is optional, at most 5,000,000 characters. It is parsed, never executed. Without it, the checkout signals cannot fire.
+- `transaction_id` is optional. It is validated but not used yet.
+- Unknown fields are rejected. Invalid requests and unscannable URLs return `400 VALIDATION_ERROR`.
+
 Response `200`:
 
 ```json
 {
   "domain": "fastlaptopdeals.example.com",
-  "site_risk_score": 0.86,
+  "site_risk_score": 0.95,
   "site_risk_level": "HIGH",
   "signals": [
-    { "code": "DOMAIN_NOT_IN_REGISTRY",   "weight": 0.40, "detail": "No registered merchant owns this domain" },
-    { "code": "DOMAIN_LOOKALIKE",         "weight": 0.25, "detail": "Edit distance 1 from croma.mock.mandit.local" },
-    { "code": "DOMAIN_NEW",               "weight": 0.10, "detail": "First seen 3 days ago (fixture)" },
-    { "code": "CHECKOUT_PAYEE_MISMATCH",  "weight": 0.30, "detail": "Payment form posts to pay.attacker.example" },
-    { "code": "EXTERNAL_PAYMENT_IFRAME",  "weight": 0.15, "detail": "Iframe origin differs from page origin" }
+    { "code": "DOMAIN_NOT_IN_REGISTRY",  "weight": 0.40, "detail": "No registered merchant owns this domain" },
+    { "code": "DOMAIN_NEW",              "weight": 0.10, "detail": "First seen 3 days ago (fixture)" },
+    { "code": "CHECKOUT_PAYEE_MISMATCH", "weight": 0.30, "detail": "Payment form posts to pay.attacker.example; UPI payee fastdeals.collect@okbank cannot be tied to a registered merchant" },
+    { "code": "EXTERNAL_PAYMENT_IFRAME", "weight": 0.15, "detail": "Payment iframe from pay.attacker.example" }
   ],
-  "tls": { "valid": true, "issuer": "Demo CA", "days_to_expiry": 80 },
-  "scanner_version": "site-scan-1.0.0"
+  "tls": { "valid": true, "issuer": "Demo CA", "days_to_expiry": 89 },
+  "merchant_id": null,
+  "scanner_version": "site-scan-1.0.0",
+  "detectors_enabled": ["DOMAIN_NOT_IN_REGISTRY", "DOMAIN_LOOKALIKE", "DOMAIN_NEW", "DOMAIN_REPUTATION_BAD",
+                        "TLS_INVALID", "NO_TLS", "CHECKOUT_PAYEE_MISMATCH", "EXTERNAL_PAYMENT_IFRAME"],
+  "reputation_lookups": []
 }
 ```
+
+| Field | Meaning |
+|---|---|
+| `merchant_id` | The `VERIFIED` merchant that owns the domain, otherwise `null` |
+| `tls` | `null` for plain HTTP or when `TLS_INVALID` is switched off. Carries `error` when invalid |
+| `detectors_enabled` | The signals that were active for this scan |
+| `reputation_lookups` | One `{provider, status, detail}` per live lookup (§6.3); `status` is `OK`, `NOT_FOUND` or `UNAVAILABLE`. Empty when no lookup ran |
 
 ### 6.2 Signals (Phase 1)
 
 | Code | Detection method | Weight |
 |---|---|---|
-| `DOMAIN_NOT_IN_REGISTRY` | Domain not present in the Team 3 merchant registry | 0.40 |
-| `DOMAIN_LOOKALIKE` | Damerau-Levenshtein ≤ 2, or a Unicode confusable skeleton (UTS #39) matching a registry domain | 0.25 |
-| `DOMAIN_NEW` | First seen fewer than 30 days ago (`domain_reputation` fixture) | 0.10 |
-| `DOMAIN_REPUTATION_BAD` | Fixture reputation `BAD` | 0.40 |
+| `DOMAIN_NOT_IN_REGISTRY` | No `VERIFIED` merchant in the Team 3 registry owns the domain or a parent of it. A `SUSPENDED` merchant counts as not registered | 0.40 |
+| `DOMAIN_LOOKALIKE` | Only for unregistered domains: Damerau-Levenshtein ≤ 2; a confusable skeleton (subset of UTS #39) matching a registry domain; a registry domain used as a prefix; or a registry brand label (5 or more characters) embedded, or one edit away, inside another host | 0.25 |
+| `DOMAIN_NEW` | First seen or registered fewer than 30 days ago (fixture row, or the RDAP registration date) | 0.10 |
+| `DOMAIN_REPUTATION_BAD` | Fixture reputation `BAD`, or a live provider reports the domain as bad (§6.3) | 0.40 |
 | `TLS_INVALID` / `NO_TLS` | Handshake failure, expired certificate, hostname mismatch, or plain HTTP outside the local profile | 0.20 |
-| `CHECKOUT_PAYEE_MISMATCH` | A form `action` or payment link points to a domain or VPA not owned by the merchant | 0.30 |
+| `CHECKOUT_PAYEE_MISMATCH` | A payment form posts (after resolving `<base href>`) to a domain the merchant does not own, or a UPI payee (`upi://pay?pa=` link or `vpa` input) is not a registry payee. On an unregistered site, every UPI payee is a mismatch. Ordinary `https` payment links are not checked yet | 0.30 |
 | `EXTERNAL_PAYMENT_IFRAME` | Payment iframe origin differs from the merchant domains | 0.15 |
-| `SUSPICIOUS_SCRIPT` | Inline script that rewrites prices or form actions after load (heuristic: DOM mutation of price nodes, observed in Playwright) | 0.15 |
-| `DRIP_PRICING` | The checkout page total exceeds the product page price by more than 10% through late-added fees | 0.10 |
+| `SUSPICIOUS_SCRIPT` | Inline script that rewrites prices or form actions after load (heuristic: DOM mutation of price nodes, observed in Playwright). **Not implemented; disabled in the config** | 0.15 |
+| `DRIP_PRICING` | The checkout page total exceeds the product page price by more than 10% through late-added fees. **Not implemented; disabled in the config** | 0.10 |
 
 Score: `site_risk_score = min(1.0, Σ weights)`. Levels: `< 0.30` is LOW, `0.30 – 0.59` is MEDIUM, `≥ 0.60` is HIGH. Weights and thresholds are versioned in `safety/config/site-scan-1.0.0.yaml`.
+
+### 6.3 Domain lookups
+
+Registration age and reputation come from a fixture file first, then from live services.
+
+| Provider | Gives | Key (environment variable) | Limits and terms |
+|---|---|---|---|
+| RDAP (`rdap.org`) | Registration date, registrar | none | 10 requests per 10 s |
+| VirusTotal v3 | Reported bad when 2 or more engines say malicious | `VIRUS_TOTAL_API_KEY` | Free tier: non-commercial, 4 per minute, 500 per day |
+| Google Safe Browsing v4 | Reported bad when the host is listed | `GOOGLE_SAFE_BROWSING_API_KEY` | Non-commercial only. **Not yet tested against the live API** |
+
+- A fixture row wins over live results.
+- Only the public host name is sent, never a path, query string or page content. IP addresses, single-label names, private suffixes (such as `.local`, `.test`, `.example`) and `example.com/.net/.org` are never sent. VirusTotal shares queried domains with its community.
+- Keys are optional. A provider without a key is skipped.
+- A failed or rejected lookup shows as `UNAVAILABLE` and **adds no score**. Scans therefore do not fail closed on reputation.
+- Providers are called one after another, with a 5 s HTTP timeout. Results are cached in memory for one hour; a result with any `UNAVAILABLE` provider is not cached.
+- `MANDIT_LIVE_LOOKUPS=off` disables all live lookups. Use it for tests and evaluation runs, which must be reproducible.
+
+### 6.4 `GET /v1/safety/domain-info?domain=`
+
+Returns who is behind a bare host name, without scanning a page.
+
+```json
+{
+  "domain": "wikipedia.org",
+  "merchant": null,
+  "registration": { "registered_on": "2001-01-13", "registrar": "MarkMonitor Inc." },
+  "reputation": "UNKNOWN",
+  "source": "live lookup",
+  "lookups": [
+    { "provider": "rdap", "status": "OK", "detail": "wikipedia.org registered 2001-01-13" },
+    { "provider": "virustotal", "status": "OK", "detail": "0 malicious, 0 suspicious engine verdicts, community score 88" }
+  ]
+}
+```
+
+`merchant` is the registry entry ([module 03 §5](03-grounding-and-verification.md#5-merchant-registry)) or `null`. Anything that is not a bare host name returns `400 VALIDATION_ERROR`.
+
+### 6.5 Implementation status
+
+| Area | State |
+|---|---|
+| Site scan, 8 of 10 signals, ablation, `domain-info`, live lookups | Implemented |
+| `SUSPICIOUS_SCRIPT`, `DRIP_PRICING` | Not implemented (need the Playwright worker) |
+| `SERVICE` authentication on the routes | Not implemented (needs the Team 1 middleware) |
+| `scan_reports` persistence, `SITE_SCANNED` event | Not implemented |
+| `domain_reputation` table adapter | Not implemented. The `cloud` profile refuses to start without it |
+| `SafetyService`, `get_risk`, `RiskSummary` (§3) | Not implemented |
+| Tool gateway (§5), injection firewall (§7) | Not implemented |
+
+Local testing: `cd services/core && python -m mandit.devserver` serves the implemented routes and the merchant registry routes on `127.0.0.1:8000`, without authentication. `MANDIT_PROFILE` selects the profile and `MANDIT_REGISTRY_FILE` selects another registry file.
+
+---
 
 ## 7. Prompt Injection Firewall
 
@@ -416,6 +486,8 @@ Query: `?content_ids=cnt_a,cnt_b&merchant_domain=croma.mock.mandit.local`. Respo
 
 `safety/config/detectors.yaml` enables or disables each detector. The settings `MANDIT_PROFILE=test` and `MANDIT_PROFILE=demo` allow runtime overrides through the `X-Mandit-Ablation: hidden_text=off,ai_addressed=off` header, which Team 6 uses. Overrides are **refused** in the `cloud` profile. Every scan report records `detectors_enabled`, so that results remain interpretable during replay.
 
+Site signals are switched on or off per signal in `safety/config/site-scan-1.0.0.yaml`; `detectors.yaml` does not exist yet. In the header, a site signal is named by its code (`X-Mandit-Ablation: domain_lookalike=off,tls_invalid=off`, case-insensitive). Only `off` is accepted.
+
 ## 9. Privacy and Redaction
 
 - Tool-call `args` are stored with `ship_to_ref` and `payment_ref` intact (they are handles). Free-text query arguments are scanned for personal data patterns (phone numbers, email addresses, PIN codes). A match emits `PII_IN_EGRESS` and the call is denied in Phase 1.
@@ -459,6 +531,6 @@ Query: `?content_ids=cnt_a,cnt_b&merchant_domain=croma.mock.mandit.local`. Respo
 | I-2.4 | Multimodal injection detection (OCR on product images and screenshots) | Text-only scanners miss image-borne instructions |
 | I-2.5 | ML classifier for instruction-likeness as an **additional** signal, never the only one | Better recall; must be evaluated adaptively |
 | I-2.6 | Egress-restricted browser worker (network policy, separate container, no credentials) | Containment for hostile pages |
-| I-2.7 | Real reputation feeds (Safe Browsing, certificate transparency monitoring) behind an adapter | Replaces fixtures |
+| I-2.7 | Reputation feeds beyond the Phase 1 lookups (§6.3): certificate transparency monitoring, licensed commercial feeds, a persistent shared cache | The Phase 1 providers are free-tier and non-commercial |
 | I-2.8 | Search API integration (`web.search`) in a discovery-only session with caching | Real-world discovery without payment capability |
 | I-2.9 | Memory-write tainting for agents with long-term memory | Defends against memory poisoning |
