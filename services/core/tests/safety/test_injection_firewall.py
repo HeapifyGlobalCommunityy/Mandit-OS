@@ -236,3 +236,20 @@ def test_invisible_detection_respects_scripts_and_emoji():
     assert find_invisible("﻿hello") == []
     assert len(find_invisible("ig‍nore")) == 1
     assert decode_tag_smuggling("x" + "".join(chr(0xE0000 + ord(c)) for c in "hi")) == "hi"
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        "<style>" + "a" * 1_000_000 + "</style>",  # was ~9 s with the old CSS rule regex
+        "<p>" + "ignore the " * 100_000 + "</p>",
+        "<p>" + "a​" * 200_000 + "</p>",
+        "<span>a</span>" * 50_000,
+    ],
+)
+def test_pathological_input_is_bounded(html):
+    import time
+
+    start = time.monotonic()
+    FW.scan(html)
+    assert time.monotonic() - start < 5.0

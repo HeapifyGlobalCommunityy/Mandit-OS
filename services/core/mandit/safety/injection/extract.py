@@ -52,7 +52,6 @@ _BLOCK = {
 INSTRUCTION_ATTRS = ("alt", "title", "aria-label", "aria-description", "placeholder")
 _DATA_SCRIPT_TYPES = {"application/ld+json", "application/json", "text/plain", "text/markdown"}
 
-_RULE_RE = re.compile(r"([^{}]{1,500})\{([^{}]{0,4000})\}")
 _SIMPLE_SELECTOR_RE = re.compile(r"^([a-z][a-z0-9-]*)?((?:[.#][a-z0-9_-]+)*)$", re.I)
 _NUM_RE = re.compile(r"(-?\d*\.?\d+)\s*([a-z%]*)")
 
@@ -225,6 +224,24 @@ class _Style:
     background: tuple[int, int, int] | None
 
 
+def _css_rules(css: str) -> list[tuple[str, str]]:
+    """``selector { body }`` pairs, found with linear string splitting.
+
+    A regex with bounded repetition here was quadratic on a large brace-free ``<style>`` block
+    (1 MB took ~9 s). Nested at-rules (``@media x { .a { ... } }``) yield their inner rules.
+    """
+    rules: list[tuple[str, str]] = []
+    for block in css.split("}"):
+        selectors, sep, body = block.rpartition("{")
+        if not sep:
+            continue
+        # For "@media x { .a" the selector is the text after the last "{" boundary.
+        selectors = selectors.rpartition("{")[2].rpartition(";")[2]
+        if 0 < len(selectors.strip()) <= 500:
+            rules.append((selectors, body[:4000]))
+    return rules
+
+
 class StyleSheet:
     """Simple-selector rules from <style> blocks."""
 
@@ -236,7 +253,7 @@ class StyleSheet:
     @classmethod
     def from_css(cls, css: str) -> StyleSheet:
         sheet = cls()
-        for selectors, body in _RULE_RE.findall(css):
+        for selectors, body in _css_rules(css):
             decls = parse_declarations(body)
             if not decls:
                 continue
