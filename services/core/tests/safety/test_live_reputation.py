@@ -4,6 +4,7 @@ from datetime import date
 import httpx
 import pytest
 
+from mandit.safety.service import build_providers
 from mandit.safety.site_scan import (
     FixtureReputationStore,
     LiveReputationStore,
@@ -107,6 +108,22 @@ def test_outage_is_reported_and_not_cached(handler):
     assert len(requests) == 2
 
 
+@pytest.mark.parametrize("status", [400, 404])
+def test_rdap_retries_the_parent_of_a_subdomain(status):
+    def handler(request):
+        if request.url.path == "/domain/malware.some-shop.org":
+            return httpx.Response(status)
+        return httpx.Response(200, json=RDAP_BODY)
+
+    store, requests = make_store(handler, [RdapProvider()])
+    row = asyncio.run(store.get("malware.some-shop.org"))
+    assert row.first_seen == date(2026, 11, 20)
+    assert [r.url.path for r in requests] == [
+        "/domain/malware.some-shop.org",
+        "/domain/some-shop.org",
+    ]
+
+
 def test_successful_lookup_is_cached():
     store, requests = make_store(answer(), [RdapProvider()])
     asyncio.run(store.get("some-shop.com"))
@@ -138,12 +155,41 @@ def test_scanner_scores_live_results():
     ]  # fmt: skip
 
 
-def test_provider_selection_follows_environment(monkeypatch):
-    from mandit.safety.service import build_providers
-
-    monkeypatch.delenv("GOOGLE_SAFE_BROWSING_API_KEY", raising=False)
-    monkeypatch.setenv("VIRUSTOTAL_API_KEY", "k")
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, ["rdap"]),
+        ({"VIRUS_TOTAL_API_KEY": ""}, ["rdap"]),
+        ({"VIRUS_TOTAL_API_KEY": "k"}, ["rdap", "virustotal"]),
+        ({"VIRUSTOTAL_API_KEY": "k"}, ["rdap", "virustotal"]),
+        ({"GOOGLE_SAFE_BROWSING_API_KEY": "k"}, ["rdap", "google_safe_browsing"]),
+    ],
+    ids=["no-keys", "empty-key", "virus-total", "alternate-spelling", "safe-browsing"],
+)
+def test_provider_selection_follows_environment(monkeypatch, env, expected):
     monkeypatch.setenv("MANDIT_LIVE_LOOKUPS", "on")
-    assert [p.name for p in build_providers()] == ["rdap", "virustotal"]
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert [p.name for p in build_providers()] == expected
+
+
+def test_live_lookups_can_be_switched_off(monkeypatch):
     monkeypatch.setenv("MANDIT_LIVE_LOOKUPS", "off")
+    monkeypatch.setenv("VIRUS_TOTAL_API_KEY", "k")
     assert build_providers() == []
+
+
+def test_rejected_key_does_not_stop_the_other_providers():
+    def handler(request):
+        if request.url.host == "rdap.org":
+            return httpx.Response(200, json=RDAP_BODY)
+        return httpx.Response(401, json={"error": {"code": "WrongCredentialsError"}})
+
+    store, _ = make_store(handler, [RdapProvider(), VirusTotalProvider("wrong")])
+    row = asyncio.run(store.get("some-shop.com"))
+    assert row.reputation == "UNKNOWN"
+    assert row.registrar == "Reg Co"
+    assert [(c.status, c.provider) for c in row.checks] == [
+        ("OK", "rdap"),
+        ("UNAVAILABLE", "virustotal"),
+    ]

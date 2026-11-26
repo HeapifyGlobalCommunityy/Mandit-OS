@@ -47,8 +47,11 @@ Phase 1 gaps, pending other teams:
 |---|---|---|---|
 | RDAP (`rdap.org`) | Registration date (`DOMAIN_NEW`), registrar | none | 10 requests per 10 s |
 | Google Safe Browsing v4 | Listed threats (`DOMAIN_REPUTATION_BAD`) | `GOOGLE_SAFE_BROWSING_API_KEY` | non-commercial use only |
-| VirusTotal v3 | 2+ malicious engines (`DOMAIN_REPUTATION_BAD`) | `VIRUSTOTAL_API_KEY` | queries are shared with its community |
+| VirusTotal v3 | 2+ malicious engines (`DOMAIN_REPUTATION_BAD`) | `VIRUS_TOTAL_API_KEY` | queries are shared with its community |
 
+- Keys are optional. Without one that provider is skipped and absent from `reputation_lookups`; a
+  rejected or rate-limited key shows as `UNAVAILABLE`. Neither stops a scan.
+- VirusTotal's free API allows 4 lookups per minute and 500 per day, for non-commercial use.
 - Only public host names are sent. Fixture rows win over live lookups, and `*.local`, `*.test`,
   `*.example`, `example.com` and IP addresses never leave the machine.
 - A failed lookup shows as `UNAVAILABLE` in `reputation_lookups` and adds no score: an outage does

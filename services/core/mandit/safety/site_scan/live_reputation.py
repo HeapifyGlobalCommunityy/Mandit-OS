@@ -93,7 +93,8 @@ class RdapProvider:
                 headers={"Accept": "application/rdap+json"},
                 follow_redirects=True,  # rdap.org redirects to the authoritative registry
             )
-            if resp.status_code == 404:
+            # Registries answer 404 or 400 for a subdomain, depending on the registry.
+            if resp.status_code in (400, 404):
                 continue
             if resp.status_code != 200:
                 return _result(self.name, "UNAVAILABLE", f"HTTP {resp.status_code}")

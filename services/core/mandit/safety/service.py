@@ -35,8 +35,9 @@ def current_profile() -> Profile:
 
 
 def build_providers() -> list[ReputationProvider]:
-    """RDAP needs no key; the other two are used when their key is set.
+    """RDAP needs no key; the other two are used only when their key is set.
 
+    A missing key is not an error: that provider is skipped and the scan runs on the rest.
     MANDIT_LIVE_LOOKUPS=off disables all outbound lookups.
     """
     mode = os.environ.get("MANDIT_LIVE_LOOKUPS", "on").lower()
@@ -47,7 +48,7 @@ def build_providers() -> list[ReputationProvider]:
     providers: list[ReputationProvider] = [RdapProvider()]
     if key := os.environ.get("GOOGLE_SAFE_BROWSING_API_KEY"):
         providers.append(SafeBrowsingProvider(key))
-    if key := os.environ.get("VIRUSTOTAL_API_KEY"):
+    if key := os.environ.get("VIRUS_TOTAL_API_KEY") or os.environ.get("VIRUSTOTAL_API_KEY"):
         providers.append(VirusTotalProvider(key))
     return providers
 
