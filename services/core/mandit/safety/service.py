@@ -20,11 +20,21 @@ from .site_scan import (
 )
 from .site_scan.config import FIXTURES_DIR as FIXTURES
 from .site_scan.live_reputation import ReputationProvider
+from .site_scan.netguard import EgressPolicy
 from .site_scan.registry_adapter import DirectoryRegistry
 from .site_scan.scanner import Profile
 
 PROFILES: tuple[Profile, ...] = ("local", "test", "demo", "cloud")
 ABLATION_PROFILES: frozenset[Profile] = frozenset({"test", "demo"})
+
+# Compose mock merchants live on private addresses; only non-cloud profiles may reach them.
+MOCK_PRIVATE_SUFFIXES = ("mock.mandit.local",)
+
+
+def egress_policy(profile: Profile) -> EgressPolicy:
+    if profile == "cloud":
+        return EgressPolicy()
+    return EgressPolicy(private_host_suffixes=MOCK_PRIVATE_SUFFIXES)
 
 
 def current_profile() -> Profile:
@@ -74,6 +84,6 @@ def build_site_scanner(profile: Profile) -> SiteScanner:
         config=load_config(),
         registry=DirectoryRegistry(build_merchant_directory()),
         reputation=build_reputation_store(),
-        tls_probe=SocketTlsProbe(),
+        tls_probe=SocketTlsProbe(policy=egress_policy(profile)),
         profile=profile,
     )

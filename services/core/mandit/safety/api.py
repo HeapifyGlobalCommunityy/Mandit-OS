@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import secrets
-from typing import Annotated, Any
+from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from mandit.grounding.api import get_directory, merchant_body
 from mandit.grounding.interface import MerchantDirectory
 
+from .http import BodyError, error_response, read_json_body
 from .service import (
     ABLATION_PROFILES,
     build_reputation_store,
@@ -48,25 +48,7 @@ def get_reputation_store() -> DomainReputationStore:
     return build_reputation_store()
 
 
-def _error(
-    status: int,
-    code: str,
-    message: str,
-    request_id: str | None,
-    details: dict[str, Any] | None = None,
-) -> JSONResponse:
-    # Error envelope from REFERENCE.md section 7.6. Swap for mandit.common's helper once it exists.
-    return JSONResponse(
-        status_code=status,
-        content={
-            "error": {
-                "code": code,
-                "message": message,
-                "request_id": request_id or "req_" + secrets.token_hex(13).upper(),
-                "details": details or {},
-            }
-        },
-    )
+_error = error_response
 
 
 def parse_ablation(header: str) -> frozenset[str]:
@@ -86,13 +68,18 @@ def parse_ablation(header: str) -> frozenset[str]:
 
 @router.post("/site-scan")
 async def site_scan(
-    body: Annotated[dict[str, Any], Body()],
+    request: Request,
     scanner: Annotated[SiteScanner, Depends(get_site_scanner)],
     profile: Annotated[Profile, Depends(get_profile)],
     x_mandit_ablation: Annotated[str | None, Header()] = None,
     x_request_id: Annotated[str | None, Header()] = None,
 ) -> JSONResponse:
-    # Validated by hand so failures use the shared error envelope (400), not FastAPI's 422.
+    # Read with a streaming size limit, then validated by hand so failures use the shared error
+    # envelope (400/413), not FastAPI's 422.
+    try:
+        body = await read_json_body(request)
+    except BodyError as exc:
+        return _error(exc.status, exc.code, exc.message, x_request_id)
     try:
         req = SiteScanRequest.model_validate(body)
     except ValidationError as exc:
