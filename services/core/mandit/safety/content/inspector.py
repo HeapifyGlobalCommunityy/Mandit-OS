@@ -121,24 +121,54 @@ class SafetyServiceImpl:
         )
         await self._store.put(record, report, req.raw)
 
-        await self._events.emit("CONTENT_SEEN", req.transaction_id, {
-            "content_id": content_id, "source_type": req.source_type, "source_url": req.url,
-            "domain": host.ascii, "content_hash": content_hash,
-            "classification": record.classification, "trust_label": record.trust_label,
-        })  # fmt: skip
-        await self._events.emit("SITE_SCANNED", req.transaction_id, {
-            "content_id": content_id, "scan_id": scan_id, "domain": host.ascii,
-            "site_risk_score": report.site_risk_score, "site_risk_level": report.site_risk_level,
-            "signals": [s["code"] for s in report.site_signals],
-            "scanner_version": report.scanner_version,
-        })  # fmt: skip
+        # Payloads follow the event catalogue (modules/05 section 12).
+        await self._events.emit(
+            "CONTENT_SEEN",
+            req.transaction_id,
+            {
+                "content_id": content_id,
+                "tool_call_id": req.tool_call_id,
+                "source_type": req.source_type,
+                "source_url": req.url,
+                "domain": host.ascii,
+                "content_hash": content_hash,
+                "classification": record.classification,
+                "fetched_at": fetched_at.isoformat().replace("+00:00", "Z"),
+            },
+        )
+        await self._events.emit(
+            "SITE_SCANNED",
+            req.transaction_id,
+            {
+                "content_id": content_id,
+                "scan_id": scan_id,
+                "domain": host.ascii,
+                "site_risk_score": report.site_risk_score,
+                "site_risk_level": report.site_risk_level,
+                "signals": [s["code"] for s in report.site_signals],
+                "scanner_version": report.scanner_version,
+            },
+        )
         if injection.injection_detected:
-            await self._events.emit("INJECTION_DETECTED", req.transaction_id, {
-                "content_id": content_id, "scan_id": scan_id, "severity": injection.severity,
-                "techniques": sorted({f.technique for f in injection.findings}),
-                "finding_ids": [f.finding_id for f in injection.findings],
-                "detectors_enabled": list(injection.detectors_enabled),
-            })  # fmt: skip
+            await self._events.emit(
+                "INJECTION_DETECTED",
+                req.transaction_id,
+                {
+                    "content_id": content_id,
+                    "scan_id": scan_id,
+                    "severity": injection.severity,
+                    "findings": [
+                        {
+                            "technique": f.technique,
+                            "severity": f.severity,
+                            "targets": list(f.targets),
+                            "finding_id": f.finding_id,
+                        }
+                        for f in injection.findings
+                    ],
+                    "detectors_enabled": list(injection.detectors_enabled),
+                },
+            )
 
         return ContentReport(
             record=record,

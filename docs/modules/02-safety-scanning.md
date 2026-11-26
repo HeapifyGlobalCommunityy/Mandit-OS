@@ -57,6 +57,10 @@ class RiskSummary:
     scanner_version: str
 ```
 
+Implemented in `services/core/mandit/safety/interface.py` (with `ContentRecord`, `ContentReport`, `InspectRequest` and `ContentNotFound`). Sequences in `RiskSummary` are tuples so that the value is immutable and hashable inside Team 4's frozen decision inputs; consumers that read them as lists are unaffected. `RiskSignal` is `{code, weight, detail, source}`, where `source` is `domain_scan` or the `content_id` the signal came from; injection techniques appear with `weight: 0.0`.
+
+`get_risk` is computed only from server-side state: the stored scan reports of the referenced content and a fresh scan of the merchant domain (the worse of the fresh scan and any stored scan of the merchant's own pages wins). It never accepts a score, level or page HTML from the caller. An unknown `content_id` raises `ContentNotFound` (HTTP 404 `CONTENT_NOT_FOUND`) instead of being skipped, so a missing source cannot lower the risk.
+
 | Consumer | Uses |
 |---|---|
 | Team 3 | `get_content` for source provenance; `get_risk` for Trust Score component P (`P = 1 − site_risk_score`, reduced further by injection severity; see Team 3 §8) |
@@ -390,17 +394,29 @@ Returns who is behind a bare host name, without scanning a page.
 
 `merchant` is the registry entry ([module 03 §5](03-grounding-and-verification.md#5-merchant-registry)) or `null`. Anything that is not a bare host name returns `400 VALIDATION_ERROR`.
 
-### 6.5 Implementation status
+### 6.5 Security behaviour of the scanner
+
+| Concern | Behaviour |
+|---|---|
+| Server-side request forgery | The TLS probe is the only connection to a caller-chosen host (reputation lookups go only to the fixed provider hosts in §6.3). Before connecting: the port must be in the allowlist (443); the host is resolved once and **every** address must be globally routable (loopback, RFC 1918, link-local including `169.254.169.254`, CGNAT, ULA, multicast and IPv4-mapped forms are refused); the socket connects to the vetted address with the original name as SNI and for certificate checks, which defeats DNS rebinding. Non-cloud profiles may reach private addresses only for hosts under `mock.mandit.local`. |
+| Error oracle | `tls.error` is a coarse code: `PORT_NOT_PERMITTED`, `DESTINATION_NOT_PERMITTED`, `DNS_FAILED`, `UNREACHABLE` (refused, reset and timed out are merged), `CERTIFICATE_INVALID`, `CERTIFICATE_EXPIRED`. |
+| Payment-target resolution | URLs resolve after parsing, against the **first** `<base href>`, as browsers do. `formaction` on buttons and inputs, the `form="id"` attribute, `<iframe srcdoc>` (depth 2), `<embed>`, `<object>` and `<frame>` are honoured. Any input value shaped like a UPI VPA counts as a payee. An unparseable payment target fails closed as `CHECKOUT_PAYEE_MISMATCH`. |
+| Request size | Bodies are streamed with a 12 MiB limit (`PAYLOAD_TOO_LARGE`, 413) before JSON parsing; deep nesting is a `VALIDATION_ERROR`. |
+| Caller-supplied HTML | `html` on `/v1/safety/site-scan` is analysed as given. Only content stored through `/v1/content/inspect` (server-fetched by the gateway) feeds `get_risk`. |
+
+### 6.6 Implementation status
 
 | Area | State |
 |---|---|
 | Site scan, 8 of 10 signals, ablation, `domain-info`, live lookups | Implemented |
 | `SUSPICIOUS_SCRIPT`, `DRIP_PRICING` | Not implemented (need the Playwright worker) |
 | `SERVICE` authentication on the routes | Not implemented (needs the Team 1 middleware) |
-| `scan_reports` persistence, `SITE_SCANNED` event | Not implemented |
+| Scanner egress guard, payee-target hardening, body limits (§6.5) | Implemented |
+| `scan_reports` persistence | In memory only (no SQLAlchemy store yet); `SITE_SCANNED` is emitted by `/v1/content/inspect` through an `EventSink` port |
 | `domain_reputation` table adapter | Not implemented. The `cloud` profile refuses to start without it |
-| `SafetyService`, `get_risk`, `RiskSummary` (§3) | Not implemented |
-| Tool gateway (§5), injection firewall (§7) | Not implemented |
+| `SafetyService`, `get_risk`, `RiskSummary` (§3), content records (§7.3) | Implemented, in-memory store |
+| Injection firewall (§7) | Implemented (static visibility analysis) |
+| Tool gateway (§5) | Not implemented |
 
 Local testing: `cd services/core && python -m mandit.devserver` serves the implemented routes and the merchant registry routes on `127.0.0.1:8000`, without authentication. `MANDIT_PROFILE` selects the profile and `MANDIT_REGISTRY_FILE` selects another registry file.
 
@@ -450,6 +466,15 @@ Response `200`:
 | `PAYMENT_FIELD_OVERRIDE` | Text that attempts to set or change amount, payee, VPA, card, merchant, shipping address or quantity ("pay ₹…", "send to …@upi", "use card …") |
 | `AUTHORITY_CLAIM` | Claims of pre-approval or authority ("the user has approved", "authorized by", "mandate updated") |
 
+Implementation (`services/core/mandit/safety/injection/`) is layered so that no single keyword list is the only defence:
+
+1. **Structure.** A static visibility analysis classifies every text node: inline `style`, simple-selector rules from `<style>` blocks, the `hidden` attribute, hiding elements (`script`, `style`, `template`, `noscript`, `head` except `title`), off-screen positioning, `text-indent`, zero-size boxes with `overflow:hidden`, `clip`/`clip-path`, `scale(0)`, transparent text and colour within CIE76 ΔE < 5 of the background. Comments, the attributes above plus `aria-description`, `placeholder`, `meta content` and hidden input values, and JSON-LD blocks are separate segments. This is a static approximation of the Playwright check; the worker should feed the same segment model when it exists.
+2. **Normalisation.** Matching runs on a folded copy: invisible characters removed, NFKC, accents and Cyrillic/Greek homoglyphs mapped, bounded leetspeak, letter-spaced words joined. Unicode tag-character payloads are decoded and scanned as hidden content (`ZERO_WIDTH`, location `SMUGGLED`). ZWJ, ZWNJ, LRM and RLM are only reported when they split a Latin word, so Indic scripts and emoji do not trigger.
+3. **Detection.** Independent families run on every segment **and** on joined streams (visible, hidden, all text, comments, attributes), so instructions split across elements are found.
+4. **Severity**, per the table below. Every finding also carries `location` (`VISIBLE`, `HIDDEN`, `COMMENT`, `ATTRIBUTE`, `DATA`, `SMUGGLED`) and `pattern` (the family that matched); both are additive.
+
+Payment directives need more evidence in visible text, where honest checkouts say "Pay ₹76,499" and "Change delivery address": an explicit override ("instead", "change the payee to …"), an unambiguous AI addressee, or an AI-addressed instruction in the same sentence. Concealment requests ("do not tell the user") are reported as `AI_ADDRESSED_INSTRUCTION`.
+
 Severity rules:
 
 | Severity | Condition |
@@ -458,6 +483,10 @@ Severity rules:
 | MEDIUM | `AI_ADDRESSED_INSTRUCTION` in visible content, or hidden content without payment targets |
 | LOW | Zero-width characters or comments without instruction content |
 | NONE | No findings |
+
+Deviation, flagged for review: comments without instruction content produce **no** finding rather than LOW, because almost every page has comments and a LOW finding would set `injection_detected` on honest pages. Zero-width characters without instruction content are LOW as specified.
+
+Fail-closed rules: overall severity is computed over every match, including findings dropped by the 200-finding cap; a document truncated by the segment backstop reports at least MEDIUM. Response fields added to §7.1: `firewall_version`, `detectors_enabled`, `truncated`, and `content_id` echoed from the request. Unsupported `mime_type` returns 415 `UNSUPPORTED_MEDIA_TYPE`; supported types are `text/html`, `application/xhtml+xml`, `text/plain` and `application/json` (every string value is scanned, located by JSON pointer).
 
 ### 7.3 `POST /v1/content/inspect` (combined)
 
@@ -478,13 +507,19 @@ Response `200`: a content record containing `content_id`, `content_hash`, `class
 
 Events: `CONTENT_SEEN`, `SITE_SCANNED`, and `INJECTION_DETECTED` when findings exist.
 
+Additive request field: `raw_encoding` (`text` default, or `base64`), because the spec allows either form without saying how to tell them apart. Decoded content above 5 MiB returns 413 `PAYLOAD_TOO_LARGE`. Hidden chunks in `sanitized_chunks` are for Team 3, Team 5 and the console; the gateway returns only `visible_text` to the agent.
+
+`GET /v1/content/{content_id}` returns the provenance block of §5.4 plus `classification`, `domain`, `source_type`, `transaction_id`, `fetched_at` and `scan_id`; 404 `CONTENT_NOT_FOUND` if unknown.
+
 ### 7.4 `GET /v1/safety/risk`
 
-Query: `?content_ids=cnt_a,cnt_b&merchant_domain=croma.mock.mandit.local`. Response: the `RiskSummary` (§3).
+Query: `?content_ids=cnt_a,cnt_b&merchant_domain=croma.mock.mandit.local`. Response: the `RiskSummary` (§3). At most 100 IDs; `merchant_domain` must be a bare host. Unknown IDs return 404 `CONTENT_NOT_FOUND`.
 
 ## 8. Detector Configuration and Ablation
 
-`safety/config/detectors.yaml` enables or disables each detector. The settings `MANDIT_PROFILE=test` and `MANDIT_PROFILE=demo` allow runtime overrides through the `X-Mandit-Ablation: hidden_text=off,ai_addressed=off` header, which Team 6 uses. Overrides are **refused** in the `cloud` profile. Every scan report records `detectors_enabled`, so that results remain interpretable during replay.
+`safety/config/detectors.yaml` enables or disables each detector (`hidden_text`, `zero_width`, `html_comment`, `attribute_text`, `ai_addressed`, `payment_override`, `authority_claim`). The settings `MANDIT_PROFILE=test` and `MANDIT_PROFILE=demo` allow runtime overrides through the `X-Mandit-Ablation: hidden_text=off,ai_addressed=off` header, which Team 6 uses. Overrides are **refused** in the `cloud` profile. Every scan report records `detectors_enabled`, so that results remain interpretable during replay.
+
+The header accepts detector names and site signal codes in one list (`hidden_text=off,domain_new=off`). Turning `hidden_text` off removes `HIDDEN_CSS` findings and the hidden-content escalation, but **not** the structural rule that hidden text is never returned to the agent.
 
 Site signals are switched on or off per signal in `safety/config/site-scan-1.0.0.yaml`; `detectors.yaml` does not exist yet. In the header, a site signal is named by its code (`X-Mandit-Ablation: domain_lookalike=off,tls_invalid=off`, case-insensitive). Only `off` is accepted.
 
