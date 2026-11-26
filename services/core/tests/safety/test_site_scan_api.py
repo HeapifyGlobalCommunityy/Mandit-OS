@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
 from mandit.safety import api
 from mandit.safety.site_scan import (
     FixtureMerchantRegistry,

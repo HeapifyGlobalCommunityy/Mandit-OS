@@ -6,7 +6,7 @@ import asyncio
 import ssl
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class SocketTlsProbe:
         return result_from_peercert(cert)
 
 
-def result_from_peercert(cert: dict, now: float | None = None) -> TlsResult:  # type: ignore[type-arg]
+def result_from_peercert(cert: dict[str, Any], now: float | None = None) -> TlsResult:
     """Build a TlsResult from ``getpeercert()`` output (already verified by the SSL context)."""
     issuer = None
     for rdn in cert.get("issuer", ()):

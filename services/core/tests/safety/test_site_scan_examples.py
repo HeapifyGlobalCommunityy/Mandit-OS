@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+
 from mandit.safety.site_scan.examples import check, load_cases, run_case
 
 TODAY, CASES = load_cases()

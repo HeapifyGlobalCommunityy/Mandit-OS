@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 import yaml
+
 from mandit.safety.site_scan import (
     FixtureMerchantRegistry,
     FixtureReputationStore,

@@ -1,4 +1,5 @@
 import pytest
+
 from mandit.safety.site_scan.domains import (
     InvalidScanTarget,
     damerau_levenshtein,
