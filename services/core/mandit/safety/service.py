@@ -8,6 +8,8 @@ from typing import cast
 
 from mandit.grounding.service import build_merchant_directory
 
+from .content import InMemoryContentStore, InMemoryEventSink, SafetyServiceImpl
+from .injection import InjectionFirewall, load_firewall_config
 from .site_scan import (
     FixtureReputationStore,
     LiveReputationStore,
@@ -86,4 +88,26 @@ def build_site_scanner(profile: Profile) -> SiteScanner:
         reputation=build_reputation_store(),
         tls_probe=SocketTlsProbe(policy=egress_policy(profile)),
         profile=profile,
+    )
+
+
+@lru_cache(maxsize=1)
+def build_firewall() -> InjectionFirewall:
+    return InjectionFirewall(load_firewall_config())
+
+
+@lru_cache(maxsize=4)
+def build_safety_service(profile: Profile) -> SafetyServiceImpl:
+    """Phase 1 wiring: in-memory content store and event sink.
+
+    Refused in the cloud profile until the SQLAlchemy store (migration 0002 tables) and the Team 5
+    evidence adapter exist: records and ledger events must not silently live in process memory.
+    """
+    if profile == "cloud":
+        raise RuntimeError("safety service has no persistent store or evidence adapter yet")
+    return SafetyServiceImpl(
+        site_scanner=build_site_scanner(profile),
+        firewall=build_firewall(),
+        store=InMemoryContentStore(),
+        events=InMemoryEventSink(),
     )

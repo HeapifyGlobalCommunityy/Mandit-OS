@@ -96,6 +96,10 @@ class SiteScanner:
         self._profile = profile
         self._today = today
 
+    @property
+    def scanner_version(self) -> str:
+        return self._cfg.scanner_version
+
     async def scan(
         self, url: str, html: str | None = None, *, disabled: frozenset[str] = frozenset()
     ) -> SiteScanResult:

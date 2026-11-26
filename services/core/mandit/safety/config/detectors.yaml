@@ -1,0 +1,14 @@
+# Prompt Injection Firewall configuration (modules/02 sections 7.2 and 8).
+# Changing a detector's behaviour bumps its version; changing severity rules bumps firewall_version.
+firewall_version: injection-1.0.0
+
+# Runtime overrides via X-Mandit-Ablation (e.g. "hidden_text=off,ai_addressed=off") are accepted only
+# in the test and demo profiles and refused in cloud. Every report records detectors_enabled.
+detectors:
+  hidden_text:      { enabled: true, version: 1.0.0 }   # HIDDEN_CSS
+  zero_width:       { enabled: true, version: 1.0.0 }   # ZERO_WIDTH (+ Unicode tag smuggling)
+  html_comment:     { enabled: true, version: 1.0.0 }   # HTML_COMMENT
+  attribute_text:   { enabled: true, version: 1.0.0 }   # ATTRIBUTE_TEXT
+  ai_addressed:     { enabled: true, version: 1.0.0 }   # AI_ADDRESSED_INSTRUCTION
+  payment_override: { enabled: true, version: 1.0.0 }   # PAYMENT_FIELD_OVERRIDE
+  authority_claim:  { enabled: true, version: 1.0.0 }   # AUTHORITY_CLAIM
