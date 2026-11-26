@@ -29,11 +29,22 @@ class RegistryMerchant:
 
 
 @dataclass(frozen=True)
+class ProviderCheck:
+    """What one external lookup said, so a scan shows what was and was not checked."""
+
+    provider: str
+    status: Literal["OK", "NOT_FOUND", "UNAVAILABLE"]
+    detail: str
+
+
+@dataclass(frozen=True)
 class DomainReputation:
     domain: str
     first_seen: date | None
     reputation: Literal["GOOD", "UNKNOWN", "BAD"]
     source: str
+    registrar: str | None = None
+    checks: tuple[ProviderCheck, ...] = ()
 
 
 class MerchantRegistry(Protocol):

@@ -12,7 +12,9 @@ Local design notes for this module. Spec: see docs/modules/02-safety-scanning.md
 | `site_scan/tls.py` | `TlsProbe` protocol; `SocketTlsProbe` (real handshake, fails closed); `StaticTlsProbe` for fixtures |
 | `site_scan/ports.py` | `MerchantRegistry` and `DomainReputationStore` protocols plus YAML fixture implementations |
 | `site_scan/scanner.py` | `SiteScanner.scan(url, html, disabled=...)` -> `SiteScanResult` |
-| `api.py`, `service.py` | `POST /v1/safety/site-scan`, `X-Mandit-Ablation` handling, Phase 1 wiring |
+| `site_scan/live_reputation.py` | RDAP, Google Safe Browsing and VirusTotal lookups |
+| `site_scan/registry_adapter.py` | The scanner's view of the grounding merchant registry |
+| `api.py`, `service.py` | `POST /v1/safety/site-scan`, `GET /v1/safety/domain-info`, `X-Mandit-Ablation`, wiring |
 
 Implemented signals: `DOMAIN_NOT_IN_REGISTRY`, `DOMAIN_LOOKALIKE`, `DOMAIN_NEW`, `DOMAIN_REPUTATION_BAD`,
 `TLS_INVALID`, `NO_TLS`, `CHECKOUT_PAYEE_MISMATCH`, `EXTERNAL_PAYMENT_IFRAME`.
@@ -33,11 +35,35 @@ Decisions:
 
 Phase 1 gaps, pending other teams:
 
-- Registry and reputation are fixture-backed (`fixtures/site_scan/`). The `cloud` profile refuses to
-  build the scanner until the Team 3 registry adapter exists. Look-alike detection needs a
-  `list_domains()` call that Team 3's published interface does not have yet.
+- The merchant registry is a YAML file (`grounding/registry/merchants.yaml`). It records who owns
+  a domain but does not prove it (no DNS or well-known-file challenge yet). The `cloud` profile
+  refuses to start until the `merchants` and `domain_reputation` table adapters exist.
 - No `SERVICE` authentication on the route yet (Team 1 middleware), no `SITE_SCANNED` ledger event
   (needs `mandit.common` events), and the error envelope is built locally until `mandit.common` has it.
+
+## External lookups
+
+| Provider | Gives | Key | Notes |
+|---|---|---|---|
+| RDAP (`rdap.org`) | Registration date (`DOMAIN_NEW`), registrar | none | 10 requests per 10 s |
+| Google Safe Browsing v4 | Listed threats (`DOMAIN_REPUTATION_BAD`) | `GOOGLE_SAFE_BROWSING_API_KEY` | non-commercial use only |
+| VirusTotal v3 | 2+ malicious engines (`DOMAIN_REPUTATION_BAD`) | `VIRUSTOTAL_API_KEY` | queries are shared with its community |
+
+- Only public host names are sent. Fixture rows win over live lookups, and `*.local`, `*.test`,
+  `*.example`, `example.com` and IP addresses never leave the machine.
+- A failed lookup shows as `UNAVAILABLE` in `reputation_lookups` and adds no score: an outage does
+  not block every purchase, but a bad domain is not detected by that provider while it lasts.
+- Results are cached in memory for one hour. `MANDIT_LIVE_LOOKUPS=off` disables all of them.
+
+## Local test server
+
+```bash
+cp .env.example .env                  # at the repository root; add API keys if you have them
+cd services/core
+python -m mandit.devserver            # http://127.0.0.1:8000/docs
+curl 'http://127.0.0.1:8000/v1/safety/domain-info?domain=wikipedia.org'
+curl 'http://127.0.0.1:8000/v1/merchants/mer_croma_demo'
+```
 
 ## Running the examples
 

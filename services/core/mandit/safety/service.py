@@ -6,14 +6,21 @@ import os
 from functools import lru_cache
 from typing import cast
 
+from mandit.grounding.service import build_merchant_directory
+
 from .site_scan import (
-    FixtureMerchantRegistry,
     FixtureReputationStore,
+    LiveReputationStore,
+    RdapProvider,
+    SafeBrowsingProvider,
     SiteScanner,
     SocketTlsProbe,
+    VirusTotalProvider,
     load_config,
 )
 from .site_scan.config import FIXTURES_DIR as FIXTURES
+from .site_scan.live_reputation import ReputationProvider
+from .site_scan.registry_adapter import DirectoryRegistry
 from .site_scan.scanner import Profile
 
 PROFILES: tuple[Profile, ...] = ("local", "test", "demo", "cloud")
@@ -27,19 +34,45 @@ def current_profile() -> Profile:
     return cast(Profile, profile)
 
 
+def build_providers() -> list[ReputationProvider]:
+    """RDAP needs no key; the other two are used when their key is set.
+
+    MANDIT_LIVE_LOOKUPS=off disables all outbound lookups.
+    """
+    mode = os.environ.get("MANDIT_LIVE_LOOKUPS", "on").lower()
+    if mode not in ("on", "off"):
+        raise RuntimeError(f"MANDIT_LIVE_LOOKUPS must be 'on' or 'off', got {mode!r}")
+    if mode == "off":
+        return []
+    providers: list[ReputationProvider] = [RdapProvider()]
+    if key := os.environ.get("GOOGLE_SAFE_BROWSING_API_KEY"):
+        providers.append(SafeBrowsingProvider(key))
+    if key := os.environ.get("VIRUSTOTAL_API_KEY"):
+        providers.append(VirusTotalProvider(key))
+    return providers
+
+
+@lru_cache(maxsize=1)
+def build_reputation_store() -> LiveReputationStore:
+    return LiveReputationStore(
+        build_providers(),
+        local=FixtureReputationStore.from_yaml(FIXTURES / "reputation.yaml"),
+    )
+
+
 @lru_cache(maxsize=4)
 def build_site_scanner(profile: Profile) -> SiteScanner:
-    """Phase 1 wiring: fixture registry and reputation, real TLS handshakes.
+    """Phase 1 wiring: file registry, fixture plus live reputation, real TLS handshakes.
 
-    The cloud profile is refused until the Team 3 registry adapter and the domain_reputation table
-    adapter exist, so a deployment can never silently scan against fixture data.
+    The cloud profile is refused until the table-backed registry and domain_reputation adapters
+    exist, so a deployment can never silently scan against fixture data.
     """
     if profile == "cloud":
         raise RuntimeError("site scanner has no production registry adapter yet")
     return SiteScanner(
         config=load_config(),
-        registry=FixtureMerchantRegistry.from_yaml(FIXTURES / "registry.yaml"),
-        reputation=FixtureReputationStore.from_yaml(FIXTURES / "reputation.yaml"),
+        registry=DirectoryRegistry(build_merchant_directory()),
+        reputation=build_reputation_store(),
         tls_probe=SocketTlsProbe(),
         profile=profile,
     )

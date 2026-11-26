@@ -12,7 +12,12 @@ from urllib.parse import urlsplit
 from .config import SIGNAL_CODES, SiteScanConfig
 from .domains import Host, InvalidScanTarget, find_lookalike, host_of, is_owned_by_any, parse_target
 from .html_checks import extract_page_structure
-from .ports import DomainReputationStore, MerchantRegistry, RegistryMerchant
+from .ports import (
+    DomainReputationStore,
+    MerchantRegistry,
+    ProviderCheck,
+    RegistryMerchant,
+)
 from .tls import TlsProbe, TlsResult
 
 RiskLevel = Literal["LOW", "MEDIUM", "HIGH"]
@@ -36,6 +41,7 @@ class SiteScanResult:
     merchant_id: str | None
     scanner_version: str
     detectors_enabled: tuple[str, ...]
+    reputation_lookups: tuple[ProviderCheck, ...] = ()
 
     @property
     def codes(self) -> list[str]:
@@ -61,6 +67,10 @@ class SiteScanResult:
             "merchant_id": self.merchant_id,
             "scanner_version": self.scanner_version,
             "detectors_enabled": list(self.detectors_enabled),
+            "reputation_lookups": [
+                {"provider": c.provider, "status": c.status, "detail": c.detail}
+                for c in self.reputation_lookups
+            ],
         }
 
 
@@ -101,7 +111,7 @@ class SiteScanner:
 
         merchant = await self._registry.resolve_domain(host.ascii)
         verified = merchant if merchant is not None and merchant.status == "VERIFIED" else None
-        await self._check_domain(host, merchant, verified, found)
+        lookups = await self._check_domain(host, merchant, verified, found)
 
         tls: TlsResult | None = None
         if scheme == "http":
@@ -130,6 +140,7 @@ class SiteScanner:
             merchant_id=verified.merchant_id if verified else None,
             scanner_version=self._cfg.scanner_version,
             detectors_enabled=tuple(c for c in SIGNAL_CODES if c in enabled),
+            reputation_lookups=lookups,
         )
 
     async def _check_domain(
@@ -138,7 +149,7 @@ class SiteScanner:
         merchant: RegistryMerchant | None,
         verified: RegistryMerchant | None,
         found: dict[str, str],
-    ) -> None:
+    ) -> tuple[ProviderCheck, ...]:
         if verified is None:
             found["DOMAIN_NOT_IN_REGISTRY"] = (
                 f"Merchant {merchant.merchant_id} owning this domain is {merchant.status}"
@@ -162,6 +173,7 @@ class SiteScanner:
                 age = (self._today() - rep.first_seen).days
                 if age < self._cfg.domain_new_days:
                     found["DOMAIN_NEW"] = f"First seen {age} days ago ({rep.source})"
+        return rep.checks if rep is not None else ()
 
     def _check_checkout(
         self,

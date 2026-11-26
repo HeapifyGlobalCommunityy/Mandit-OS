@@ -5,13 +5,22 @@ from __future__ import annotations
 import secrets
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Header
+from fastapi import APIRouter, Body, Depends, Header, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .service import ABLATION_PROFILES, build_site_scanner, current_profile
-from .site_scan import InvalidScanTarget, SiteScanner
+from mandit.grounding.api import get_directory, merchant_body
+from mandit.grounding.interface import MerchantDirectory
+
+from .service import (
+    ABLATION_PROFILES,
+    build_reputation_store,
+    build_site_scanner,
+    current_profile,
+)
+from .site_scan import DomainReputationStore, InvalidScanTarget, SiteScanner
 from .site_scan.config import SIGNAL_CODES
+from .site_scan.domains import parse_target
 from .site_scan.scanner import Profile
 
 router = APIRouter(prefix="/v1/safety", tags=["safety"])
@@ -33,6 +42,10 @@ def get_profile() -> Profile:
 
 def get_site_scanner(profile: Annotated[Profile, Depends(get_profile)]) -> SiteScanner:
     return build_site_scanner(profile)
+
+
+def get_reputation_store() -> DomainReputationStore:
+    return build_reputation_store()
 
 
 def _error(
@@ -105,3 +118,38 @@ async def site_scan(
     except InvalidScanTarget as exc:
         return _error(400, "VALIDATION_ERROR", f"URL cannot be scanned: {exc}", x_request_id)
     return JSONResponse(status_code=200, content=result.to_dict())
+
+
+@router.get("/domain-info")
+async def domain_info(
+    domain: Annotated[str, Query(min_length=1, max_length=253)],
+    directory: Annotated[MerchantDirectory, Depends(get_directory)],
+    reputation: Annotated[DomainReputationStore, Depends(get_reputation_store)],
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> JSONResponse:
+    """Who is behind a domain: the registered merchant (if any), registration data, reputation."""
+    try:
+        if any(c in domain for c in "/?#@:"):
+            raise InvalidScanTarget("expected a bare host name")
+        _, host = parse_target(f"https://{domain}")
+    except InvalidScanTarget as exc:
+        return _error(400, "VALIDATION_ERROR", f"Invalid domain: {exc}", x_request_id)
+    merchant = await directory.resolve_domain(host.ascii)
+    rep = await reputation.get(host.ascii)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "domain": host.ascii,
+            "merchant": merchant_body(merchant) if merchant else None,
+            "registration": {
+                "registered_on": rep.first_seen.isoformat() if rep and rep.first_seen else None,
+                "registrar": rep.registrar if rep else None,
+            },
+            "reputation": rep.reputation if rep else "UNKNOWN",
+            "source": rep.source if rep else None,
+            "lookups": [
+                {"provider": c.provider, "status": c.status, "detail": c.detail}
+                for c in (rep.checks if rep else ())
+            ],
+        },
+    )

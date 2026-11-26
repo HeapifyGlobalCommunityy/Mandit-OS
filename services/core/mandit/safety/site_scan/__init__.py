@@ -2,12 +2,20 @@
 
 from .config import SiteScanConfig, load_config
 from .domains import InvalidScanTarget
+from .live_reputation import (
+    LiveReputationStore,
+    RdapProvider,
+    SafeBrowsingProvider,
+    VirusTotalProvider,
+    is_public_domain,
+)
 from .ports import (
     DomainReputation,
     DomainReputationStore,
     FixtureMerchantRegistry,
     FixtureReputationStore,
     MerchantRegistry,
+    ProviderCheck,
     RegistryMerchant,
 )
 from .scanner import Signal, SiteScanner, SiteScanResult
@@ -19,8 +27,12 @@ __all__ = [
     "FixtureMerchantRegistry",
     "FixtureReputationStore",
     "InvalidScanTarget",
+    "LiveReputationStore",
     "MerchantRegistry",
+    "ProviderCheck",
+    "RdapProvider",
     "RegistryMerchant",
+    "SafeBrowsingProvider",
     "Signal",
     "SiteScanConfig",
     "SiteScanResult",
@@ -29,5 +41,7 @@ __all__ = [
     "StaticTlsProbe",
     "TlsProbe",
     "TlsResult",
+    "VirusTotalProvider",
+    "is_public_domain",
     "load_config",
 ]
