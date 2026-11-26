@@ -180,7 +180,9 @@ class _Unit:
         ]
 
 
-def _unit(segments: Iterable[Segment], glue: bool, folds: dict[int, str]) -> _Unit:
+def _unit(
+    segments: Iterable[Segment], glue: bool, folds: dict[int, str], blocks: bool = True
+) -> _Unit:
     unit = _Unit("")
     parts: list[str] = []
     pos = 0
@@ -193,7 +195,12 @@ def _unit(segments: Iterable[Segment], glue: bool, folds: dict[int, str]) -> _Un
         if parts:
             # A block boundary is a sentence boundary: "Add to cart" in one block and a price in
             # another are not one directive.
-            sep = "" if (glue and seg.glue_before) else ("\n" if seg.block_before else " ")
+            # Hidden fragments are joined without breaks (``blocks=False``): splitting an
+            # instruction across hidden elements is the attack being looked for.
+            if glue and seg.glue_before:
+                sep = ""
+            else:
+                sep = "\n" if (blocks and seg.block_before) else " "
             parts.append(sep)
             pos += len(sep)
         parts.append(folded)
@@ -218,13 +225,15 @@ def _location(seg: Segment, hidden_text_on: bool) -> Location:
 def payment_finding_applies(pm: PaymentMatch, location: Location) -> bool:
     """Evidence needed before a payment directive is a finding.
 
-    Visible text must carry an explicit override ("instead", "change the payee") or an unambiguous
-    AI addressee: honest checkouts say "Pay ₹76,499" in plain sight. Non-visible text needs less,
-    because legitimate pages have no reason to hide payment directives, but still more than a bare
-    "deliver to" so that responsively hidden marketing copy does not fire.
+    Visible text must carry an explicit override ("instead", "change the payee to"), an unambiguous
+    AI addressee, or an AI-addressed instruction in the same sentence (checked by the caller):
+    honest checkouts say "Pay ₹76,499" and "Change delivery address" in plain sight.
+    Non-visible text needs less, because legitimate pages have no reason to hide payment
+    directives, but still more than a bare "deliver to", so responsively hidden marketing copy
+    does not fire.
     """
     if location == "VISIBLE":
-        return pm.strong_override or pm.strict_addressee
+        return pm.strong_override or pm.strict_addressee or (pm.has_addressee and pm.has_vpa)
     return pm.strong_override or pm.has_addressee or pm.has_override or pm.has_vpa
 
 
@@ -269,10 +278,10 @@ class InjectionFirewall:
         text_segs = [s for s in segments if s.kind in ("TEXT", "DATA")]
         visible = [s for s in text_segs if s.visibility == "VISIBLE"]
         hidden = [s for s in text_segs if s.visibility == "HIDDEN"]
-        for stream in (visible, hidden, text_segs):
+        for stream, blocks in ((visible, True), (hidden, False), (text_segs, True)):
             if len(stream) > 1:
-                builder.analyse(_unit(stream, glue=True, folds=folds), split=True)
-                builder.analyse(_unit(stream, glue=False, folds=folds), split=True)
+                builder.analyse(_unit(stream, True, folds, blocks), split=True)
+                builder.analyse(_unit(stream, False, folds, blocks), split=True)
         for kind in ("COMMENT", "ATTRIBUTE"):
             stream = [s for s in segments if s.kind == kind]
             if len(stream) > 1:
@@ -431,8 +440,10 @@ class _FindingBuilder:
         if not unit.text or (self.truncated and self.max_severity == "HIGH"):
             return  # nothing to add: the cap is reached and severity cannot rise further
         hits: list[tuple[str, Severity, list[int], int, int, float, str, tuple[str, ...]]] = []
+        ai_spans: list[tuple[int, int]] = []
         if "ai_addressed" in self.enabled:
             for m in find_ai_addressed(unit.text):
+                ai_spans.append((m.start, m.end))
                 ids = unit.segments_for(m.start, m.end)
                 loc = self._loc(ids, unit)
                 sev: Severity = "MEDIUM" if loc == "VISIBLE" else "HIGH"
@@ -445,7 +456,8 @@ class _FindingBuilder:
         if "payment_override" in self.enabled:
             for pm in find_payment_directives(unit.text):
                 ids = unit.segments_for(pm.start, pm.end)
-                if payment_finding_applies(pm, self._loc(ids, unit)):
+                addressed = any(s < pm.end and e > pm.start for s, e in ai_spans)
+                if addressed or payment_finding_applies(pm, self._loc(ids, unit)):
                     conf = 0.9 if pm.strict_addressee or pm.strong_override else 0.75
                     hits.append(("PAYMENT_FIELD_OVERRIDE", "HIGH", ids, pm.start, pm.end, conf,
                                  "payment_directive", pm.targets))  # fmt: skip

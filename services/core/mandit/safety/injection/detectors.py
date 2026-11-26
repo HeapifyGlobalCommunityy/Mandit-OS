@@ -23,8 +23,9 @@ from dataclasses import dataclass
 _ADDRESSEE = (
     r"(?:ai|a\.i\.?|artificial intelligence|assistant|ai assistant|ai agent|agent|llm"
     r"|large language model|language model|ai model|chatbot|gpt|chatgpt|claude|gemini|copilot"
-    r"|shopping assistant"
-    r"|shopping agent|browsing agent|autonomous agent|automated (?:system|agent|buyer))s?"
+    r"|(?:ai |autonomous |automated )?(?:shopping|purchasing|buying|browsing)"
+    r" (?:assistant|agent|bot)"
+    r"|autonomous agent|automated (?:system|agent|buyer))s?"
 )
 _SENT = r"[^.!?\n]"  # stay inside one sentence
 
@@ -147,8 +148,9 @@ _FIELD = (
 )
 _STRONG_OVERRIDE_RE = re.compile(
     rf"\b(?:instead|override|overrides|in place of)\b|\b(?:change|update|switch|replace|modify)"
-    rf"(?:d|s)?\b{_SENT}{{0,20}}?\b{_FIELD}\b|\b(?:correct|actual|real|official|only valid|new|"
-    rf"updated|changed)\s(?:\w+\s)?{_FIELD}\b(?!\s(?:is shown|shown))"
+    rf"(?:d|s)?\b{_SENT}{{0,20}}?\b{_FIELD}\b\s*(?:to|with|=|:|is now)\s"
+    rf"|\b(?:correct|actual|real|official|only valid|new|updated|changed)\s(?:\w+\s)?{_FIELD}\b"
+    r"(?!\s(?:is shown|shown))"
 )
 _STRICT_ADDRESSEE_RE = re.compile(
     r"\b(?:ai|a\.i\.?|llm|language model|chatbot|gpt|chatgpt|claude|gemini|copilot|ai assistant"
