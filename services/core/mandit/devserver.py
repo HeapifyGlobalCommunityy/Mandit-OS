@@ -16,6 +16,7 @@ from mandit.safety import api as safety_api
 
 app = FastAPI(title="Mandit OS (local test server)")
 app.include_router(safety_api.router)
+app.include_router(safety_api.content_router)
 app.include_router(grounding_api.router)
 
 if __name__ == "__main__":
