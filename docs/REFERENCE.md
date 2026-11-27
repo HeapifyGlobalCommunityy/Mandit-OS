@@ -1037,6 +1037,9 @@ Column legend: **HTTP** is the status when the code is returned as an HTTP error
 | `INJECTION_DETECTED_HIGH` | Decision | SAFETY | High-severity injection in a referenced source (HG-14) |
 | `INJECTION_DETECTED_MEDIUM` | Decision | SAFETY | Medium-severity injection in a referenced source (SU-04) |
 | `ABLATION_NOT_PERMITTED` | 403 | n/a | Detector override requested outside the test or demo profile |
+| `CONTENT_NOT_FOUND` | 404 | n/a | Unknown `content_id` (content record read, or risk aggregation, which fails closed) |
+| `PAYLOAD_TOO_LARGE` | 413 | n/a | Request body or decoded content exceeds the safety module's size limit |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | n/a | `mime_type` not supported by the injection firewall, or the body does not parse as it |
 
 Site signals (`DOMAIN_NOT_IN_REGISTRY`, `DOMAIN_LOOKALIKE`, `DOMAIN_NEW`, `DOMAIN_REPUTATION_BAD`, `TLS_INVALID`, `NO_TLS`, `CHECKOUT_PAYEE_MISMATCH`, `EXTERNAL_PAYMENT_IFRAME`, `SUSPICIOUS_SCRIPT`, `DRIP_PRICING`) and injection techniques (`HIDDEN_CSS`, `ZERO_WIDTH`, `HTML_COMMENT`, `ATTRIBUTE_TEXT`, `AI_ADDRESSED_INSTRUCTION`, `PAYMENT_FIELD_OVERRIDE`, `AUTHORITY_CLAIM`) are **signal codes** inside scan reports. They are registered in [02-safety-scanning.md](modules/02-safety-scanning.md) §6.2 and §7.2.
 
@@ -1171,6 +1174,7 @@ The six threat classes come from the brief (Section 2). Classes T7 to T13 extend
 | T16 | Memory poisoning | Policy preferences come only from signed mandates | n/a | T2 | Phase 2 | Phase 2 |
 | T17 | Insider rewrite of the whole chain | External anchoring of checkpoints | n/a | T5 | Phase 2 | Phase 2 |
 | T18 | Approval fatigue | Few, meaningful step-ups; diffs shown | Unnecessary step-up rate metric | T4, T6 | Metric | Planned |
+| T19 | Server-side request forgery through the scanner | Scanner egress guard: port allowlist, every resolved address must be global, connection pinned to the vetted address (DNS rebinding), coarse error codes | n/a | T2 | `tool-misuse/ATK-TOOL-201` | Implemented |
 
 Status values: `Planned`, `Implemented`, `Tested` (corpus passing in CI), `Phase 2`.
 
@@ -1183,6 +1187,8 @@ Status values: `Planned`, `Implemented`, `Tested` (corpus passing in CI), `Phase
 | Detector evasion | Adaptive attackers defeat content detectors | Detectors are not relied on as primary controls (safety invariants, §2.2) |
 | Reputation lookup outage | A failed or rate-limited lookup adds no risk score, so a known-bad domain can pass that detector while it lasts | Registry and payee binding still apply; persistent cache; fail to step-up (Phase 2) |
 | Disclosure to lookup services | Domains that users' agents visit are sent to third parties | Host names only; `MANDIT_LIVE_LOOKUPS=off` |
+| Static visibility analysis | The injection firewall infers visibility from inline styles and `<style>` blocks only; external stylesheets and script-driven hiding are not seen, and text styled with a colour on an unknown dark background may be misread as hidden | Playwright computed-style worker (week 5) feeding the same segment model |
+| Unhinted cross-origin forms | A payment form whose fields carry no payment-like names, posting cross-origin, is not flagged by the site scanner | Signed checkout and payee binding (T5 primary controls); Playwright observation of submission targets |
 | Static-corpus overstatement | Block rates on a fixed corpus overstate robustness | Phase 2 adaptive attacker loop; honest reporting in module 06 §12 |
 
 ### 5. Change Log
@@ -1192,6 +1198,7 @@ Status values: `Planned`, `Implemented`, `Tested` (corpus passing in CI), `Phase
 | 2026-11-23 | Initial threat model derived from the brief, the PRD and the Deep Dive review | Documentation baseline |
 | 2026-11-25 | T2: credential-layer controls implemented (pinned EdDSA KYA JWT verification, `cnf.jkt` key binding, small-order Ed25519 key rejection) with corpus cases `impersonation/ATK-IMP-001` to `006`. RFC 9421 request signatures, nonce replay and revocation remain Planned, so T2 status stays Planned. | Team 1 |
 | 2026-11-26 | T5: site scanner with registry, look-alike, domain-age and reputation signals added (detective control). Payee binding and signed checkout remain Planned, so T5 status stays Planned. Two residual risks added for external lookups. | Team 2 |
+| 2026-11-26 | Added T19 (scanner SSRF) and two residual risks found in the Team 2 safety-scanning review | Team 2 |
 
 ---
 

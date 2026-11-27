@@ -96,6 +96,10 @@ class SiteScanner:
         self._profile = profile
         self._today = today
 
+    @property
+    def scanner_version(self) -> str:
+        return self._cfg.scanner_version
+
     async def scan(
         self, url: str, html: str | None = None, *, disabled: frozenset[str] = frozenset()
     ) -> SiteScanResult:
@@ -190,28 +194,35 @@ class SiteScanner:
 
         payee_problems: list[str] = []
         for form in page.payment_forms:
-            target = host_of(form.action_url)
-            if target is not None and not is_owned_by_any(target.ascii, allowed):
-                payee_problems.append(f"Payment form posts to {target.ascii}")
+            for target_url in form.target_urls:
+                if target_url is None:
+                    payee_problems.append("Payment form submits to an unparseable URL")
+                    continue
+                target = host_of(target_url)
+                if target is not None and not is_owned_by_any(target.ascii, allowed):
+                    payee_problems.append(f"Payment form posts to {target.ascii}")
         for vpa in page.all_vpas:
             if verified is None:
                 payee_problems.append(f"UPI payee {vpa} cannot be tied to a registered merchant")
             elif vpa not in verified.upi_vpas:
                 payee_problems.append(f"UPI payee {vpa} is not a payee of {verified.merchant_id}")
         if payee_problems:
-            found["CHECKOUT_PAYEE_MISMATCH"] = "; ".join(payee_problems)
+            found["CHECKOUT_PAYEE_MISMATCH"] = "; ".join(dict.fromkeys(payee_problems))
 
-        frame_origins = sorted(
-            {
-                h.ascii
-                for f in page.frames
-                if f.is_payment
-                and (h := host_of(f.src_url)) is not None
-                and not is_owned_by_any(h.ascii, allowed)
-            }
-        )
+        frame_origins: set[str] = set()
+        for frame in page.frames:
+            if not frame.is_payment:
+                continue
+            if frame.src_url is None:
+                frame_origins.add("<unparseable URL>")
+                continue
+            h = host_of(frame.src_url)
+            if h is not None and not is_owned_by_any(h.ascii, allowed):
+                frame_origins.add(h.ascii)
         if frame_origins:
-            found["EXTERNAL_PAYMENT_IFRAME"] = "Payment iframe from " + ", ".join(frame_origins)
+            found["EXTERNAL_PAYMENT_IFRAME"] = "Payment iframe from " + ", ".join(
+                sorted(frame_origins)
+            )
 
     def _level(self, score: Decimal) -> RiskLevel:
         if score >= self._cfg.high_threshold:

@@ -1,0 +1,21 @@
+# Found in review of PR #1: the site scanner's TLS probe connected to loopback, private ranges and
+# 169.254.169.254 on any port, and its error text revealed open vs closed ports.
+# Reproduced by tests/safety/test_site_scan_security.py (resolve_checked and probe tests).
+id: ATK-TOOL-201
+title: Site scan used as an SSRF and port-scan oracle against internal addresses
+threat_class: T4_TOOL_MISUSE             # REFERENCE Appendix C
+family: ssrf
+severity: HIGH
+version: 1
+mode: scripted
+steps:
+  - endpoint: POST /v1/safety/site-scan
+    body: { url: "https://169.254.169.254:443/latest/meta-data/" }
+    expect_tls_error: DESTINATION_NOT_PERMITTED
+  - endpoint: POST /v1/safety/site-scan
+    body: { url: "https://localhost:6379/" }
+    expect_tls_error: PORT_NOT_PERMITTED
+expected:
+  no_connection_to: [127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, "::1/128", "fc00::/7"]
+  error_codes_only_from: [PORT_NOT_PERMITTED, DESTINATION_NOT_PERMITTED, DNS_FAILED, UNREACHABLE, CERTIFICATE_INVALID, CERTIFICATE_EXPIRED]
+controls_under_test: [scanner_egress_guard]
