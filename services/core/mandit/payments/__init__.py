@@ -48,6 +48,20 @@ from mandit.payments.schemas import (
     PaymentStatus,
     PaymentStatusResponse,
 )
+from mandit.payments.service import (
+    CheckoutChangedError,
+    DecisionExpiredError,
+    DecisionNotAllowError,
+    DecisionNotFoundError,
+    IdempotencyConflictError,
+    MandateInvalidError,
+    PaymentAlreadyExistsError,
+    PaymentError,
+    PaymentNotFoundError,
+    PaymentOrchestratorImpl,
+    ProposalNotFoundError,
+    SpendReservationError,
+)
 from mandit.payments.webhook_verifier import (
     PspWebhookVerifier,
     WebhookSignatureError,
@@ -71,8 +85,20 @@ __all__ = [
     "PaymentExecuteResponse",
     "PaymentStatusResponse",
     "MockPspWebhookPayload",
-    # Interfaces
+    # Interfaces & Service
     "PaymentOrchestrator",
+    "PaymentOrchestratorImpl",
+    "PaymentError",
+    "DecisionNotFoundError",
+    "DecisionNotAllowError",
+    "DecisionExpiredError",
+    "ProposalNotFoundError",
+    "PaymentNotFoundError",
+    "PaymentAlreadyExistsError",
+    "IdempotencyConflictError",
+    "CheckoutChangedError",
+    "SpendReservationError",
+    "MandateInvalidError",
     "MandateClient",
     "GroundingClient",
     "DecisionProvider",

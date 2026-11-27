@@ -86,3 +86,33 @@ Mapping directly to migration `services/core/migrations/versions/0004_policy_and
 - **Key Separation:** Dedicated Ed25519 public keys registered specifically for webhook verification (`register_trusted_key(key_id, public_key)`), kept strictly separate from service-to-service authentication keys.
 - **Fail-Closed Behavior:** Fails closed (401) on missing headers, malformed signatures, unknown key IDs, signature mismatches, or malformed JSON.
 - **Non-Authority:** Webhook delivery is never treated as authoritative proof of payment success; Core status confirmation via `GET /psp/v1/payments/{psp_payment_id}` is mandatory before any state mutation.
+
+---
+
+## 7. Payment Orchestrator Engine & State Machine (Milestone 3)
+
+Implemented in `mandit.payments.service.PaymentOrchestratorImpl` per `docs/modules/04-policy-and-payments.md §8`:
+
+### Execution Phases & Transaction Boundaries
+1. **Phase 1 (Preconditions & Preparation):**
+   - Idempotency lookup on `idempotency_keys` table. Replays completed responses directly (`200 OK`) and rejects concurrent duplicate executions.
+   - Rejects mismatched requests using the same idempotency key with `409 IDEMPOTENCY_KEY_MISMATCH`.
+   - Validates latest decision from Policy Engine: requires `outcome == 'ALLOW'` and unexpired validity.
+   - Refetches checkout from Grounding service and verifies SHA-256 hash integrity (TOCTOU protection).
+   - Reserves spend via Team 1 `MandateClient.reserve_spend(...)`.
+   - Issues single-use scoped token via Team 4 `TokenService.issue(...)` (releases spend if issuance fails).
+   - Persists initial `PaymentModel` record with `status='CREATED'`.
+   - Emits transactional `PAYMENT_CREATED` event into outbox.
+   - **Transaction 1 Commits & Closes** before any network operations.
+2. **Phase 2 (PSP Rail Operations):**
+   - External PSP HTTP / In-Process calls run with **zero open database transactions**.
+   - **Card Rail:** Creates scoped credential (`POST /psp/v1/card/scoped-credentials`), authorizes (`POST /psp/v1/card/authorize`), and captures (`POST /psp/v1/card/capture`).
+   - **UPI Rail:** Creates UPI intent (`POST /psp/v1/upi/intents`) and transitions to `PENDING`.
+3. **Phase 3 (Outcome Persistence & Settlement):**
+   - **Transaction 2 Opens:**
+   - **Success (CAPTURED / SUCCESS):** Commits spend via `MandateClient.commit_spend(...)`, transitions token to `REDEEMED`, marks checkout complete, and emits `PAYMENT_RESULT`.
+   - **Decline / Failure (FAILED):** Releases spend reservation via `MandateClient.release_spend(...)`, marks token `FAILED`, and emits `PAYMENT_RESULT`.
+   - **Timeout / Ambiguous Outcome (UNKNOWN):** Preserves spend reservation in `RESERVED` state (never released while rail outcome is unresolved), transitions payment and token to `UNKNOWN`, emits `PAYMENT_RESULT`. Charges are never retried while in `UNKNOWN`.
+   - **Pending (PENDING - UPI):** Preserves spend reservation pending callback / webhook resolution.
+   - Finalizes `idempotency_keys` record with response status and serialized body.
+   - **Transaction 2 Commits & Closes**.
