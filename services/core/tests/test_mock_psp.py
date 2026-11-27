@@ -25,7 +25,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -39,7 +39,13 @@ from mock_psp.api import get_psp_db_session, get_psp_service, router
 from mock_psp.config import SETTINGS
 from mock_psp.crypto import PspKeyManager
 from mock_psp.faults import FaultManager
-from mock_psp.models import PspBase, PspScopedCredentialModel
+from mock_psp.models import (
+    PspBase,
+    PspPaymentModel,
+    PspScopedCredentialModel,
+    PspUpiIntentModel,
+    PspWebhookOutboxModel,
+)
 from mock_psp.schemas import (
     AuthorizeCardRequest,
     CaptureCardRequest,
@@ -877,5 +883,152 @@ def test_scoped_credential_unique_token_id_constraint(test_setup):
         with pytest.raises(IntegrityError):
             await db.flush()
         await db.rollback()
+
+    asyncio.run(_run())
+
+
+def test_upi_intent_expiry_cascades_to_payment_and_webhook_on_status_query(test_setup):
+    """Test get_payment_status reconciles expired UPI intent + payment and emits outbox webhook."""
+
+    async def _run() -> None:
+        service: MockPspService = test_setup["service"]
+        db: AsyncSessionWrapper = test_setup["db"]
+        token = make_test_token(
+            token_id="ptok_upi_exp_status", payee_id="acq_croma_001@icici", rail="UPI"
+        )
+        now = datetime.now(UTC)
+
+        # 1. Create UPI intent that is already expired
+        intent_res = await service.create_upi_intent(
+            CreateUpiIntentRequest(
+                mandit_token=token,
+                payee_vpa="acq_croma_001@icici",
+                amount_minor=500000,
+                currency="INR",
+                expires_at=now - timedelta(seconds=5),
+            ),
+            db,
+        )
+        assert intent_res.status == "PENDING"
+
+        # 2. Query payment status
+        stat_res = await service.get_payment_status(intent_res.psp_payment_id, db)
+        assert stat_res.status == "EXPIRED"
+
+        # 3. Verify underlying intent and payment are both EXPIRED
+        i_stmt = select(PspUpiIntentModel).where(
+            PspUpiIntentModel.intent_id == intent_res.intent_id
+        )
+        i_row = (await db.execute(i_stmt)).scalar_one()
+        assert i_row.status == "EXPIRED"
+
+        p_stmt = select(PspPaymentModel).where(
+            PspPaymentModel.psp_payment_id == intent_res.psp_payment_id
+        )
+        p_row = (await db.execute(p_stmt)).scalar_one()
+        assert p_row.status == "EXPIRED"
+
+        # 4. Verify signed webhook was created in outbox
+        wh_stmt = select(PspWebhookOutboxModel).where(
+            PspWebhookOutboxModel.psp_payment_id == intent_res.psp_payment_id
+        )
+        wh_rows = (await db.execute(wh_stmt)).scalars().all()
+        assert len(wh_rows) == 1
+        assert wh_rows[0].event_type == "payment.failed"
+        assert wh_rows[0].payload["status"] == "EXPIRED"
+
+    asyncio.run(_run())
+
+
+def test_repeated_status_polling_does_not_duplicate_webhook(test_setup):
+    """Test repeated status polling on expired intent does not generate duplicate webhooks."""
+
+    async def _run() -> None:
+        service: MockPspService = test_setup["service"]
+        db: AsyncSessionWrapper = test_setup["db"]
+        token = make_test_token(
+            token_id="ptok_upi_exp_dup_check", payee_id="acq_croma_001@icici", rail="UPI"
+        )
+        now = datetime.now(UTC)
+
+        intent_res = await service.create_upi_intent(
+            CreateUpiIntentRequest(
+                mandit_token=token,
+                payee_vpa="acq_croma_001@icici",
+                amount_minor=500000,
+                currency="INR",
+                expires_at=now - timedelta(seconds=10),
+            ),
+            db,
+        )
+
+        # Poll status 3 times
+        for _ in range(3):
+            stat = await service.get_payment_status(intent_res.psp_payment_id, db)
+            assert stat.status == "EXPIRED"
+
+        # Verify only 1 webhook in outbox
+        wh_stmt = select(PspWebhookOutboxModel).where(
+            PspWebhookOutboxModel.psp_payment_id == intent_res.psp_payment_id
+        )
+        wh_rows = (await db.execute(wh_stmt)).scalars().all()
+        assert len(wh_rows) == 1
+
+    asyncio.run(_run())
+
+
+def test_approve_expired_upi_intent_updates_payment_record(test_setup):
+    """Test approving expired UPI intent fails with 410 and marks payment EXPIRED."""
+
+    async def _run() -> None:
+        service: MockPspService = test_setup["service"]
+        db: AsyncSessionWrapper = test_setup["db"]
+        token = make_test_token(
+            token_id="ptok_upi_exp_appr", payee_id="acq_croma_001@icici", rail="UPI"
+        )
+        now = datetime.now(UTC)
+
+        intent_res = await service.create_upi_intent(
+            CreateUpiIntentRequest(
+                mandit_token=token,
+                payee_vpa="acq_croma_001@icici",
+                amount_minor=500000,
+                currency="INR",
+                expires_at=now - timedelta(seconds=5),
+            ),
+            db,
+        )
+
+        # Attempt to approve expired intent
+        with pytest.raises(PspServiceError) as exc:
+            await service.approve_upi_intent(
+                intent_res.intent_id,
+                payer_vpa="user@mockbank",
+                session=db,
+            )
+        assert exc.value.status_code == 410
+        assert exc.value.code == "INTENT_EXPIRED"
+
+        # Verify DB records transitioned to EXPIRED
+        i_stmt = select(PspUpiIntentModel).where(
+            PspUpiIntentModel.intent_id == intent_res.intent_id
+        )
+        i_row = (await db.execute(i_stmt)).scalar_one()
+        assert i_row.status == "EXPIRED"
+
+        p_stmt = select(PspPaymentModel).where(
+            PspPaymentModel.psp_payment_id == intent_res.psp_payment_id
+        )
+        p_row = (await db.execute(p_stmt)).scalar_one()
+        assert p_row.status == "EXPIRED"
+
+        # Verify failure webhook in outbox
+        wh_stmt = select(PspWebhookOutboxModel).where(
+            PspWebhookOutboxModel.psp_payment_id == intent_res.psp_payment_id
+        )
+        wh_rows = (await db.execute(wh_stmt)).scalars().all()
+        assert len(wh_rows) == 1
+        assert wh_rows[0].event_type == "payment.failed"
+        assert wh_rows[0].payload["status"] == "EXPIRED"
 
     asyncio.run(_run())

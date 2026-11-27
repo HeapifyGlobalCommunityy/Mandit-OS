@@ -541,7 +541,7 @@ States: `CREATED → AUTHORIZED → CAPTURED`; `FAILED`.
 | `POST /psp/v1/upi/intents/{id}/approve` | `{ "payer_vpa": "demo.user@mockbank" }` | `200 { "status": "SUCCESS" }` and a signed callback |
 | `POST /psp/v1/upi/intents/{id}/decline` | `{}` | `200 { "status": "FAILED" }` and a signed callback |
 
-States: `CREATED → PENDING → SUCCESS`; `FAILED`; `EXPIRED`. The payee VPA must equal the token's `payee_id` (`CHANGED_PAYEE` otherwise).
+States: `CREATED → PENDING → SUCCESS`; `FAILED`; `EXPIRED`. The payee VPA must equal the token's `payee_id` (`CHANGED_PAYEE` otherwise). Expired intents (`expires_at ≤ now`) reconcile to `EXPIRED` together with their associated payment during status retrieval (`GET /psp/v1/payments/{id}`) or upon approval submission (returning 410 `INTENT_EXPIRED`), emitting a signed `payment.failed` webhook without duplicates.
 
 ### 9.3 Fault injection (`POST /psp/v1/admin/faults`, test and demo profiles only)
 

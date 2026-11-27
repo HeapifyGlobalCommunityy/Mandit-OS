@@ -18,6 +18,7 @@ from mock_psp.models import (
     PspPaymentModel,
     PspScopedCredentialModel,
     PspUpiIntentModel,
+    PspWebhookOutboxModel,
     ensure_tz,
 )
 from mock_psp.schemas import (
@@ -581,7 +582,36 @@ class MockPspService:
         exp = ensure_tz(intent.expires_at)
         if exp is not None and exp <= now:
             intent.status = "EXPIRED"
+            intent.updated_at = now
+
+            p_stmt = select(PspPaymentModel).where(
+                PspPaymentModel.psp_payment_id == intent.psp_payment_id
+            )
+            p_res = await session.execute(p_stmt)
+            payment = p_res.scalar_one_or_none()
+            if payment is not None:
+                payment.status = "EXPIRED"
+                payment.updated_at = now
+
             await self._flush(session)
+
+            # Check if webhook already dispatched to avoid duplicates
+            wh_stmt = select(PspWebhookOutboxModel).where(
+                PspWebhookOutboxModel.psp_payment_id == intent.psp_payment_id,
+                PspWebhookOutboxModel.event_type == "payment.failed",
+            )
+            wh_res = await session.execute(wh_stmt)
+            if wh_res.scalar_one_or_none() is None:
+                await self.webhook_dispatcher.record_and_dispatch(
+                    session,
+                    event_type="payment.failed",
+                    psp_payment_id=intent.psp_payment_id,
+                    payment_ref=intent.intent_id,
+                    amount_minor=intent.amount_minor,
+                    currency=intent.currency,
+                    status="EXPIRED",
+                )
+
             raise PspServiceError("INTENT_EXPIRED", "UPI intent has expired", 410)
 
         if intent.status not in ("PENDING", "CREATED"):
@@ -695,6 +725,41 @@ class MockPspService:
 
         if payment is None:
             raise PspServiceError("PAYMENT_NOT_FOUND", "Payment not found", 404)
+
+        # Reconcile expired UPI intent if still pending
+        if payment.status in ("PENDING", "CREATED") and payment.intent_id:
+            i_stmt = select(PspUpiIntentModel).where(
+                PspUpiIntentModel.intent_id == payment.intent_id
+            )
+            i_res = await session.execute(i_stmt)
+            intent = i_res.scalar_one_or_none()
+            if intent is not None:
+                now = datetime.now(UTC)
+                exp = ensure_tz(intent.expires_at)
+                if exp is not None and exp <= now:
+                    if intent.status in ("PENDING", "CREATED"):
+                        intent.status = "EXPIRED"
+                        intent.updated_at = now
+                    payment.status = "EXPIRED"
+                    payment.updated_at = now
+                    await self._flush(session)
+
+                    # Trigger signed failure webhook if not already recorded
+                    wh_stmt = select(PspWebhookOutboxModel).where(
+                        PspWebhookOutboxModel.psp_payment_id == payment.psp_payment_id,
+                        PspWebhookOutboxModel.event_type == "payment.failed",
+                    )
+                    wh_res = await session.execute(wh_stmt)
+                    if wh_res.scalar_one_or_none() is None:
+                        await self.webhook_dispatcher.record_and_dispatch(
+                            session,
+                            event_type="payment.failed",
+                            psp_payment_id=payment.psp_payment_id,
+                            payment_ref=intent.intent_id,
+                            amount_minor=payment.amount_minor,
+                            currency=payment.currency,
+                            status="EXPIRED",
+                        )
 
         return PspPaymentStatusResponse(
             psp_payment_id=payment.psp_payment_id,

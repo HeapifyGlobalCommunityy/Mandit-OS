@@ -13,8 +13,9 @@
    - `POST /psp/v1/card/capture`: Captures amount $\le \text{authorized}$, updates state to `CAPTURED`, dispatches signed webhook.
 2. **UPI Synthetic Flow**:
    - `POST /psp/v1/upi/intents`: Binds collect intent to payee VPA, amount, and expiry.
-   - `POST /psp/v1/upi/intents/{id}/approve` (and `/psp/v1/upi/approve`): Transitions to `SUCCESS`, dispatches signed webhook callback.
+   - `POST /psp/v1/upi/intents/{id}/approve` (and `/psp/v1/upi/approve`): Transitions to `SUCCESS`, dispatches signed webhook callback. Expired intents transition to `EXPIRED` and fail with 410.
    - `POST /psp/v1/upi/intents/{id}/decline` (and `/psp/v1/upi/decline`): Transitions to `FAILED`, dispatches signed decline webhook callback.
+   - Expiry Reconciliation: On payment status retrieval (`GET /psp/v1/payments/{id}`), expired pending UPI intents and payments transition to `EXPIRED`, enqueuing a signed `payment.failed` webhook (`status: EXPIRED`) into the outbox without duplicates.
 3. **Reconciliation & Status**:
    - `GET /psp/v1/payments/{psp_payment_id}`: Source of truth for Core reconciliation worker.
 4. **Webhook Security & Discovery**:
