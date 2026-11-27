@@ -9,7 +9,7 @@ import hashlib
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select, update
@@ -26,6 +26,7 @@ from mandit.payments.interface import (
 from mandit.payments.models import (
     IdempotencyKeyModel,
     PaymentModel,
+    PspWebhookEventModel,
     ensure_tz,
 )
 from mandit.payments.psp_client import (
@@ -39,6 +40,7 @@ from mandit.payments.psp_client import (
     PspTimeoutError,
 )
 from mandit.payments.schemas import (
+    MockPspWebhookPayload,
     PaymentErrorCode,
     PaymentExecuteResponse,
     PaymentRail,
@@ -46,7 +48,13 @@ from mandit.payments.schemas import (
     PaymentStatus,
     PaymentStatusResponse,
 )
+from mandit.payments.webhook_verifier import (
+    PspWebhookVerifier,
+    WebhookSignatureError,
+    get_webhook_verifier,
+)
 from mandit.tokens.interface import TokenService
+from mandit.tokens.models import PaymentTokenModel
 from mandit.tokens.service import TokenError, TokenIssueError
 
 
@@ -123,6 +131,7 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
         grounding_client: GroundingClient,
         psp_client: PspClient,
         session_factory: Any = None,
+        webhook_verifier: PspWebhookVerifier | None = None,
     ) -> None:
         self.decision_provider = decision_provider
         self.token_service = token_service
@@ -130,6 +139,7 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
         self.grounding_client = grounding_client
         self.psp_client = psp_client
         self.session_factory = session_factory
+        self.webhook_verifier = webhook_verifier or get_webhook_verifier()
 
     @asynccontextmanager
     async def _session_scope(self, session: Any = None) -> AsyncIterator[Any]:
@@ -748,17 +758,395 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
 
     async def process_webhook(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, Any] | bytes | str,
         signature_header: str | None,
         session: Any = None,
     ) -> dict[str, Any]:
-        """Webhook handling deferred to Milestone 4 per architectural roadmap."""
-        raise NotImplementedError("Webhook processing is deferred to Milestone 4")
+        """Process incoming Mock PSP webhook callback (modules/04 §8.3).
+
+        1. Verify Mock-PSP-Signature header using PspWebhookVerifier. Fails closed (401).
+        2. Deduplicate using psp_webhook_events table: replay returns 200 with no-op
+           and emits WEBHOOK_REPLAYED.
+        3. Never trust webhook payload alone: query GET /psp/v1/payments/{psp_payment_id}
+           for authoritative status.
+        4. Match local payment record.
+        5. Apply valid transitions (e.g. PENDING/UNKNOWN -> CAPTURED/SUCCESS/FAILED/EXPIRED).
+        6. Commit/release spend and mark token redeemed/failed accordingly.
+        7. Emit PAYMENT_RESULT event transactionally.
+        """
+        payment_ref_early: str | None = None
+        psp_event_id_early: str | None = None
+        if isinstance(payload, dict):
+            ref_val = payload.get("payment_ref")
+            payment_ref_early = str(ref_val) if ref_val is not None else None
+            evt_val = payload.get("psp_event_id")
+            psp_event_id_early = str(evt_val) if evt_val is not None else None
+
+        # Step 1: Verify Ed25519 signature over canonical JCS bytes
+        try:
+            verified_payload = self.webhook_verifier.verify(payload, signature_header)
+        except WebhookSignatureError as exc:
+            # Emit optional WEBHOOK_REJECTED event
+            async with self._session_scope(session) as sess_rej:
+                if sess_rej is not None and hasattr(sess_rej, "add"):
+                    await self._emit_event(
+                        sess_rej,
+                        event_type="WEBHOOK_REJECTED",
+                        refs={"payment_id": str(payment_ref_early or "")},
+                        payload={"code": exc.code, "psp_event_id": str(psp_event_id_early or "")},
+                    )
+                    await self._commit(sess_rej)
+            raise
+
+        # Step 2: Validate payload schema
+        try:
+            webhook_data = MockPspWebhookPayload.model_validate(verified_payload)
+        except Exception as exc:
+            raise PaymentError(
+                PaymentErrorCode.WEBHOOK_SIGNATURE_INVALID,
+                f"Invalid webhook payload structure: {exc}",
+                status_code=400,
+            ) from exc
+
+        psp_event_id = webhook_data.psp_event_id
+        psp_payment_id = webhook_data.psp_payment_id
+        payment_ref = webhook_data.payment_ref
+        now = datetime.now(UTC)
+
+        async with self._session_scope(session) as sess:
+            if sess is None or not hasattr(sess, "execute"):
+                return {"status": "NO_SESSION", "psp_event_id": psp_event_id}
+
+            # Step 3: Replay prevention check via psp_webhook_events table
+            stmt_dup = select(PspWebhookEventModel).where(
+                PspWebhookEventModel.psp_event_id == psp_event_id
+            )
+            res_dup = await sess.execute(stmt_dup)
+            existing_event = res_dup.scalar_one_or_none()
+            if existing_event is not None:
+                # Idempotent replay: emit WEBHOOK_REPLAYED and return 200 OK without state mutation
+                await self._emit_event(
+                    sess,
+                    event_type="WEBHOOK_REPLAYED",
+                    refs={"payment_id": payment_ref or existing_event.payment_id},
+                    payload={"psp_event_id": psp_event_id},
+                )
+                await self._commit(sess)
+                return {
+                    "status": "REPLAYED",
+                    "detail": "WEBHOOK_REPLAYED",
+                    "psp_event_id": psp_event_id,
+                }
+
+            # Step 4: Record webhook event in psp_webhook_events table
+            body_hash = hashlib.sha256(jcs.canonicalize(verified_payload)).hexdigest()
+            event_row = PspWebhookEventModel(
+                psp_event_id=psp_event_id,
+                payment_id=payment_ref or psp_payment_id,
+                body_hash=body_hash,
+                received_at=now,
+            )
+            sess.add(event_row)
+            await self._flush(sess)
+
+            # Step 5: Authoritative status confirmation via PSP status API
+            # Rule: Webhook delivery is NEVER trusted alone as proof of settlement!
+            try:
+                psp_status_resp = await self.psp_client.get_payment_status(psp_payment_id)
+                auth_status = psp_status_resp.status
+            except Exception as exc:
+                # If PSP query fails, leave local payment state unchanged
+                await self._commit(sess)
+                return {
+                    "status": "PSP_UNAVAILABLE",
+                    "psp_event_id": psp_event_id,
+                    "error": str(exc),
+                }
+
+            # Step 6: Match local payment record
+            stmt_pay = select(PaymentModel).where(
+                (PaymentModel.payment_id == payment_ref)
+                | (PaymentModel.psp_payment_id == psp_payment_id)
+            )
+            res_pay = await sess.execute(stmt_pay)
+            payment = res_pay.scalar_one_or_none()
+            if payment is None:
+                await self._commit(sess)
+                return {
+                    "status": "PAYMENT_NOT_FOUND",
+                    "psp_event_id": psp_event_id,
+                    "payment_ref": payment_ref,
+                    "psp_payment_id": psp_payment_id,
+                }
+
+            # Check if payment is already in terminal state
+            terminal_states = (
+                PaymentStatus.CAPTURED.value,
+                PaymentStatus.SUCCESS.value,
+                PaymentStatus.FAILED.value,
+                PaymentStatus.EXPIRED.value,
+            )
+            if payment.status in terminal_states:
+                await self._commit(sess)
+                return {
+                    "status": "ALREADY_TERMINAL",
+                    "psp_event_id": psp_event_id,
+                    "payment_id": payment.payment_id,
+                    "payment_status": payment.status,
+                }
+
+            # Lookup reservation_id from payment_tokens
+            reservation_id = None
+            if payment.token_id:
+                stmt_tok = select(PaymentTokenModel).where(
+                    PaymentTokenModel.token_id == payment.token_id
+                )
+                res_tok = await sess.execute(stmt_tok)
+                token_row = res_tok.scalar_one_or_none()
+                if token_row:
+                    reservation_id = token_row.reservation_id
+
+            target_status = payment.status
+
+            # Step 7: Apply verified state transitions
+            if auth_status in ("CAPTURED", "SUCCESS"):
+                target_status = (
+                    PaymentStatus.CAPTURED.value
+                    if payment.rail == PaymentRail.CARD.value
+                    else PaymentStatus.SUCCESS.value
+                )
+                stmt_upd = (
+                    update(PaymentModel)
+                    .where(PaymentModel.payment_id == payment.payment_id)
+                    .values(
+                        status=target_status,
+                        psp_payment_id=psp_payment_id,
+                        updated_at=now,
+                    )
+                )
+                await sess.execute(stmt_upd)
+
+                # Commit spend
+                if reservation_id:
+                    await self.mandate_client.commit_spend(reservation_id, session=sess)
+
+                # Mark token redeemed
+                if payment.token_id and hasattr(self.token_service, "mark_redeemed"):
+                    await self.token_service.mark_redeemed(payment.token_id, sess)
+
+                # Complete merchant checkout
+                try:
+                    proposal = await self.grounding_client.get_proposal(
+                        payment.proposal_id, session=sess
+                    )
+                    checkout_id = getattr(proposal, "checkout_id", None)
+                    if checkout_id:
+                        await self.grounding_client.complete_checkout(
+                            checkout_id, psp_payment_id, session=sess
+                        )
+                except Exception:
+                    pass
+
+                # Emit PAYMENT_RESULT
+                await self._emit_event(
+                    sess,
+                    event_type="PAYMENT_RESULT",
+                    refs={"payment_id": payment.payment_id, "token_id": payment.token_id or ""},
+                    payload={
+                        "status": target_status,
+                        "psp_payment_id": psp_payment_id,
+                        "failure_code": None,
+                        "reconciled": False,
+                    },
+                )
+
+            elif auth_status in ("FAILED", "EXPIRED"):
+                target_status = (
+                    PaymentStatus.EXPIRED.value
+                    if auth_status == "EXPIRED"
+                    else PaymentStatus.FAILED.value
+                )
+                stmt_upd = (
+                    update(PaymentModel)
+                    .where(PaymentModel.payment_id == payment.payment_id)
+                    .values(
+                        status=target_status,
+                        psp_payment_id=psp_payment_id,
+                        failure_code=auth_status,
+                        updated_at=now,
+                    )
+                )
+                await sess.execute(stmt_upd)
+
+                # Release spend
+                if reservation_id:
+                    await self.mandate_client.release_spend(reservation_id, session=sess)
+
+                # Mark token failed
+                if payment.token_id and hasattr(self.token_service, "mark_failed"):
+                    await self.token_service.mark_failed(payment.token_id, sess)
+
+                # Emit PAYMENT_RESULT
+                await self._emit_event(
+                    sess,
+                    event_type="PAYMENT_RESULT",
+                    refs={"payment_id": payment.payment_id, "token_id": payment.token_id or ""},
+                    payload={
+                        "status": target_status,
+                        "psp_payment_id": psp_payment_id,
+                        "failure_code": auth_status,
+                        "reconciled": False,
+                    },
+                )
+
+            await self._commit(sess)
+            return {
+                "status": "PROCESSED",
+                "psp_event_id": psp_event_id,
+                "payment_id": payment.payment_id,
+                "payment_status": target_status,
+            }
 
     async def reconcile(
         self,
         timeout_threshold_seconds: int = 15,
         session: Any = None,
     ) -> list[PaymentStatusResponse]:
-        """Reconciliation worker deferred to Milestone 4 per architectural roadmap."""
-        raise NotImplementedError("Payment reconciliation is deferred to Milestone 4")
+        """Reconciliation worker scanning UNKNOWN and PENDING payments (modules/04 §8.2).
+
+        1. Selects payments in UNKNOWN or PENDING older than timeout_threshold_seconds.
+        2. Queries GET /psp/v1/payments/{psp_payment_id} for each.
+        3. Moves resolved payments to terminal states and commits or releases spend.
+        4. Never retries charges. Idempotent across multiple runs.
+        """
+        cutoff = datetime.now(UTC) - timedelta(seconds=timeout_threshold_seconds)
+        reconciled_responses: list[PaymentStatusResponse] = []
+
+        async with self._session_scope(session) as sess:
+            if sess is None or not hasattr(sess, "execute"):
+                return []
+
+            stmt = select(PaymentModel).where(
+                PaymentModel.status.in_([PaymentStatus.UNKNOWN.value, PaymentStatus.PENDING.value]),
+                PaymentModel.created_at <= cutoff,
+            )
+            res = await sess.execute(stmt)
+            unresolved_payments = res.scalars().all()
+
+            for payment in unresolved_payments:
+                if not payment.psp_payment_id:
+                    continue
+
+                try:
+                    psp_status = await self.psp_client.get_payment_status(payment.psp_payment_id)
+                except Exception:
+                    continue
+
+                auth_status = psp_status.status
+                if auth_status not in ("CAPTURED", "SUCCESS", "FAILED", "EXPIRED"):
+                    continue
+
+                # Lookup reservation_id
+                reservation_id = None
+                if payment.token_id:
+                    stmt_tok = select(PaymentTokenModel).where(
+                        PaymentTokenModel.token_id == payment.token_id
+                    )
+                    res_tok = await sess.execute(stmt_tok)
+                    tok_row = res_tok.scalar_one_or_none()
+                    if tok_row:
+                        reservation_id = tok_row.reservation_id
+
+                now = datetime.now(UTC)
+                if auth_status in ("CAPTURED", "SUCCESS"):
+                    target_status = (
+                        PaymentStatus.CAPTURED.value
+                        if payment.rail == PaymentRail.CARD.value
+                        else PaymentStatus.SUCCESS.value
+                    )
+                    stmt_upd = (
+                        update(PaymentModel)
+                        .where(PaymentModel.payment_id == payment.payment_id)
+                        .values(status=target_status, updated_at=now)
+                    )
+                    await sess.execute(stmt_upd)
+
+                    if reservation_id:
+                        await self.mandate_client.commit_spend(reservation_id, session=sess)
+
+                    if payment.token_id and hasattr(self.token_service, "mark_redeemed"):
+                        await self.token_service.mark_redeemed(payment.token_id, sess)
+
+                    try:
+                        proposal = await self.grounding_client.get_proposal(
+                            payment.proposal_id, session=sess
+                        )
+                        checkout_id = getattr(proposal, "checkout_id", None)
+                        if checkout_id:
+                            await self.grounding_client.complete_checkout(
+                                checkout_id, payment.psp_payment_id, session=sess
+                            )
+                    except Exception:
+                        pass
+
+                    await self._emit_event(
+                        sess,
+                        event_type="PAYMENT_RESULT",
+                        refs={
+                            "payment_id": payment.payment_id,
+                            "token_id": payment.token_id or "",
+                        },
+                        payload={
+                            "status": target_status,
+                            "psp_payment_id": payment.psp_payment_id,
+                            "failure_code": None,
+                            "reconciled": True,
+                        },
+                    )
+
+                elif auth_status in ("FAILED", "EXPIRED"):
+                    target_status = (
+                        PaymentStatus.EXPIRED.value
+                        if auth_status == "EXPIRED"
+                        else PaymentStatus.FAILED.value
+                    )
+                    stmt_upd = (
+                        update(PaymentModel)
+                        .where(PaymentModel.payment_id == payment.payment_id)
+                        .values(
+                            status=target_status,
+                            failure_code=auth_status,
+                            updated_at=now,
+                        )
+                    )
+                    await sess.execute(stmt_upd)
+
+                    if reservation_id:
+                        await self.mandate_client.release_spend(reservation_id, session=sess)
+
+                    if payment.token_id and hasattr(self.token_service, "mark_failed"):
+                        await self.token_service.mark_failed(payment.token_id, sess)
+
+                    await self._emit_event(
+                        sess,
+                        event_type="PAYMENT_RESULT",
+                        refs={
+                            "payment_id": payment.payment_id,
+                            "token_id": payment.token_id or "",
+                        },
+                        payload={
+                            "status": target_status,
+                            "psp_payment_id": payment.psp_payment_id,
+                            "failure_code": auth_status,
+                            "reconciled": True,
+                        },
+                    )
+
+                # Append to reconciled results
+                updated_status = await self.get(payment.payment_id, session=sess)
+                if updated_status is not None:
+                    reconciled_responses.append(updated_status)
+
+            await self._commit(sess)
+
+        return reconciled_responses

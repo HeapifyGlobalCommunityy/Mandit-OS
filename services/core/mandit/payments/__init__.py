@@ -3,6 +3,13 @@
 Per docs/modules/04-policy-and-payments.md §8 and docs/REFERENCE.md §9.4, §12.5.
 """
 
+from mandit.payments.api import (
+    get_db_session,
+    get_payment_orchestrator,
+)
+from mandit.payments.api import (
+    router as payments_router,
+)
 from mandit.payments.interface import (
     DecisionProvider,
     GroundingClient,
@@ -126,4 +133,8 @@ __all__ = [
     "WebhookSignatureError",
     "get_webhook_verifier",
     "set_webhook_verifier",
+    # API Router
+    "payments_router",
+    "get_payment_orchestrator",
+    "get_db_session",
 ]

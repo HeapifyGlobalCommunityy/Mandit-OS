@@ -93,7 +93,7 @@ class PaymentOrchestrator(Protocol):
 
     async def process_webhook(
         self,
-        payload: dict[str, Any],
+        payload: dict[str, Any] | bytes | str,
         signature_header: str | None,
         session: Any = None,
     ) -> dict[str, Any]: ...

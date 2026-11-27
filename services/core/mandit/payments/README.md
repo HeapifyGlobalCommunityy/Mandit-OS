@@ -116,3 +116,41 @@ Implemented in `mandit.payments.service.PaymentOrchestratorImpl` per `docs/modul
    - **Pending (PENDING - UPI):** Preserves spend reservation pending callback / webhook resolution.
    - Finalizes `idempotency_keys` record with response status and serialized body.
    - **Transaction 2 Commits & Closes**.
+
+---
+
+## 8. Payment API, Webhooks & Reconciliation (Milestone 4)
+
+Implemented in `mandit.payments.api` and `mandit.payments.service`:
+
+### API Endpoints
+- `POST /v1/payments/execute`:
+  - Header: `Idempotency-Key: <key>`
+  - Body: `PaymentExecuteRequest(proposal_id=...)`
+  - Response: `PaymentExecuteResponse` (200 OK)
+  - Maps domain errors to appropriate HTTP status codes (400, 404, 409, 410).
+- `GET /v1/payments/{payment_id}`:
+  - Response: `PaymentStatusResponse` (200 OK, 404 if not found)
+- `POST /v1/payments/webhooks/mock-psp`:
+  - Header: `Mock-PSP-Signature: keyid="...",sig="..."`
+  - Validates RFC 8785 JCS Ed25519 signature (fails closed with 401 on missing/invalid/unknown keys).
+  - Deduplicates via `psp_webhook_events`: returns 200 OK with `WEBHOOK_REPLAYED` without duplicate state mutation.
+  - Queries `GET /psp/v1/payments/{psp_payment_id}` out-of-band before changing state.
+  - Settle spend: commits on confirmed `CAPTURED`/`SUCCESS`; releases on `FAILED`/`EXPIRED`.
+
+### Reconciliation Worker (`reconcile()`)
+- Scans `payments` for `UNKNOWN` and `PENDING` states older than `timeout_threshold_seconds` (default: 15s).
+- Queries `GET /psp/v1/payments/{psp_payment_id}` for authoritative status.
+- Settles terminal outcomes (`CAPTURED`, `SUCCESS`, `FAILED`, `EXPIRED`) with corresponding spend commit/release.
+- Never repeats payment charges.
+- Idempotent across multiple runs.
+
+### Production Key Provisioning Boundary
+By default, `PspWebhookVerifier` starts with an empty trusted-key registry (fail-closed). Production key registration is an explicit Core Application Bootstrap / Platform configuration step during startup:
+```python
+from mandit.payments.webhook_verifier import get_webhook_verifier
+
+# In Core application lifespan / startup:
+verifier = get_webhook_verifier()
+verifier.register_trusted_key("psp-2026-11", psp_public_key)
+```
