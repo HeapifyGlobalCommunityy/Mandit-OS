@@ -3,7 +3,10 @@
 Implements Ed25519 webhook signatures per docs/modules/04-policy-and-payments.md §8.3.
 """
 
+import json
 import re
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from cryptography.hazmat.primitives import serialization
@@ -75,3 +78,43 @@ class PspKeyManager:
             return True
         except Exception:
             return False
+
+    def create_service_jwt(
+        self,
+        aud: str = "mandit-core",
+        iss: str = "mock-psp",
+        lifetime_seconds: int = 300,
+        target_service: str | None = None,
+    ) -> str:
+        """Create a short-lived EdDSA service JWT per docs/REFERENCE.md §8.3.
+
+        Valid for at most 5 minutes (300 seconds), aud set to target service.
+        """
+        if lifetime_seconds <= 0 or lifetime_seconds > 300:
+            raise ValueError(
+                f"Service JWT lifetime must be between 1 and 300 seconds, got {lifetime_seconds}"
+            )
+
+        target_aud = target_service or aud
+        now = int(datetime.now(UTC).timestamp())
+        header = {
+            "alg": "EdDSA",
+            "kid": self.key_id,
+            "typ": "JWT",
+        }
+        claims = {
+            "iss": iss,
+            "aud": target_aud,
+            "iat": now,
+            "exp": now + lifetime_seconds,
+            "jti": str(uuid.uuid4()),
+        }
+
+        header_json = json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        claims_json = json.dumps(claims, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        header_b64 = b64url_encode(header_json)
+        claims_b64 = b64url_encode(claims_json)
+        signing_input = f"{header_b64}.{claims_b64}".encode("ascii")
+        sig_bytes = self.private_key.sign(signing_input)
+        sig_b64 = b64url_encode(sig_bytes)
+        return f"{header_b64}.{claims_b64}.{sig_b64}"

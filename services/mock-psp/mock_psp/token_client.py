@@ -53,27 +53,34 @@ def extract_unverified_claims(token_str: str) -> dict[str, Any]:
 
 
 class HttpTokenClient:
-    """HTTP client invoking Core POST /v1/payment-tokens/redeem."""
+    """HTTP client invoking Core POST /v1/payment-tokens/redeem with Service <jwt> auth."""
 
     def __init__(
         self,
         base_url: str = "http://localhost:8000",
         http_client: httpx.AsyncClient | None = None,
+        key_manager: Any | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self._client = http_client
+        self.key_manager = key_manager
 
     async def redeem(self, req: TokenRedeemRequest) -> TokenRedeemResponse:
-        """Dispatch redemption request to Mandit Core."""
+        """Dispatch redemption request to Mandit Core with Service <jwt> header."""
         url = f"{self.base_url}/v1/payment-tokens/redeem"
         payload = req.model_dump()
+        headers: dict[str, str] = {}
+
+        if self.key_manager is not None and hasattr(self.key_manager, "create_service_jwt"):
+            service_jwt = self.key_manager.create_service_jwt(aud="mandit-core")
+            headers["Authorization"] = f"Service {service_jwt}"
 
         try:
             if self._client is not None:
-                resp = await self._client.post(url, json=payload)
+                resp = await self._client.post(url, json=payload, headers=headers)
             else:
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(url, json=payload)
+                    resp = await client.post(url, json=payload, headers=headers)
         except Exception as exc:
             raise TokenServiceUnavailable(
                 f"Failed to communicate with Core Token Service at {url}: {exc}"

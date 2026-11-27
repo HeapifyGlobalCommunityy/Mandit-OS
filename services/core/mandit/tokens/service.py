@@ -7,7 +7,7 @@ and revocation per docs/modules/04-policy-and-payments.md §7.
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from sqlalchemy import select, update
@@ -842,7 +842,7 @@ class TokenServiceImpl:
             res = await session.execute(stmt)
             row = res.scalar_one_or_none()
             if row is not None:
-                return row.to_schema()
+                return cast(PaymentToken, row.to_schema())
         return None
 
     async def revoke(

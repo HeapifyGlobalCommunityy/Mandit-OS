@@ -25,7 +25,10 @@ SessionLocal = sessionmaker(bind=engine)
 
 # Singleton service instances
 key_manager = PspKeyManager(key_id=SETTINGS.key_id)
-token_client = HttpTokenClient(base_url=SETTINGS.core_base_url)
+token_client = HttpTokenClient(
+    base_url=SETTINGS.core_base_url,
+    key_manager=key_manager,
+)
 webhook_dispatcher = WebhookDispatcher(
     key_manager=key_manager,
     core_base_url=SETTINGS.core_base_url,

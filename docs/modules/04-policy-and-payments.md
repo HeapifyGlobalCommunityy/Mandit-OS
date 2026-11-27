@@ -372,6 +372,41 @@ Event: `TOKEN_ISSUED` or `TOKEN_ISSUE_REFUSED` (with code).
 
 ### 7.3 `POST /v1/payment-tokens/redeem` (called by the mock PSP; service auth)
 
+#### Service Authentication Contract (REFERENCE §7.5, §8.3, §9.4)
+
+The token redemption endpoint is protected by mandatory service-to-service authentication:
+- **Header:** `Authorization: Service <jwt>`
+- **JWT Header:** `{"alg": "EdDSA", "typ": "JWT", "kid": "<key_id>"}`
+- **JWT Claims:**
+  - `iss`: Calling service identifier (`"mock-psp"`)
+  - `aud`: Target service identifier (`"mandit-core"`)
+  - `iat`: Timestamp (UTC epoch seconds)
+  - `exp`: Timestamp (UTC epoch seconds; strictly enforced maximum lifetime `exp - iat <= 300` seconds / 5 minutes)
+  - `jti`: Unique token UUID
+- **Key Isolation & Ownership:**
+  - The Mock PSP securely generates and maintains its Ed25519 private key in `PspKeyManager` (`key_id = "psp-2026-11"`). Mandit Core never stores or has access to this private key.
+  - Mandit Core verifies the incoming Ed25519 signature exclusively against a pre-registered public key corresponding to `kid`.
+- **Core Bootstrap Responsibility & Dependency Injection:**
+  - `services/core` is a modular monolith where domain routers are assembled by the root application / integration owner.
+  - Team 4 exposes the dependency-injection interface via `mandit.tokens.service_auth`:
+    - `get_service_auth_verifier() -> ServiceAuthVerifier`
+    - `set_service_auth_verifier(verifier: ServiceAuthVerifier) -> None`
+    - `ServiceAuthVerifier.register_trusted_key(key_id: str, public_key: ed25519.Ed25519PublicKey) -> None`
+  - **Registration Timing:** The Core application bootstrap owner must register the trusted Mock PSP public key during application startup (e.g. within FastAPI `lifespan` or the application factory) prior to serving traffic:
+    ```python
+    from mandit.tokens.service_auth import get_service_auth_verifier
+
+    # During application lifespan / startup:
+    verifier = get_service_auth_verifier()
+    verifier.register_trusted_key("psp-2026-11", psp_ed25519_public_key)
+    ```
+  - **Testing vs. Production:** FastAPI `app.dependency_overrides` is strictly reserved for test suites. Production bootstrap must use the verifier interface directly.
+  - **Fail-Closed Guarantee:** By default, `_SERVICE_AUTH_VERIFIER` contains an empty key registry. If Core is started without registering a trusted key, all `/redeem` requests fail closed with `401 UNAUTHORIZED` (`detail={"code": "UNAUTHORIZED", "message": "No trusted service keys configured (fail-closed)"}`).
+- **Replay Scope & Payment-Token CAS Guarantee:**
+  - The `Service <jwt>` authenticates the *calling service identity* and has a maximum lifetime of 300 seconds.
+  - **No request-level JWT replay protection:** The same service JWT can authenticate multiple redemption calls within its 300-second window.
+  - **Single-use guarantee is enforced at the database level:** Individual payment tokens are strictly single-use via atomic compare-and-set (`PaymentTokenModel.status == 'ISSUED' -> 'REDEEMING'`). Replayed attempts to redeem an already consumed token return `409 Conflict (TOKEN_ALREADY_REDEEMED)`.
+
 Request:
 
 ```json

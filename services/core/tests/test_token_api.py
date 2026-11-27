@@ -31,6 +31,7 @@ from mandit.tokens.service import (
     TokenRedemptionRejected,
     TokenServiceImpl,
 )
+from mandit.tokens.service_auth import ServiceAuthClaims, require_service_auth
 
 
 class AsyncSessionWrapper:
@@ -67,6 +68,14 @@ def client(mock_token_service):
 
     app.dependency_overrides[get_token_service] = lambda: mock_token_service
     app.dependency_overrides[get_db_session] = lambda: session
+    app.dependency_overrides[require_service_auth] = lambda: ServiceAuthClaims(
+        iss="mock-psp",
+        aud="mandit-core",
+        iat=int(datetime.now(UTC).timestamp()),
+        exp=int(datetime.now(UTC).timestamp()) + 300,
+        jti="test_jti",
+        key_id="test_kid",
+    )
 
     test_client = TestClient(app)
     try:

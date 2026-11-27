@@ -18,6 +18,7 @@ from mandit.tokens.schemas import (
     TokenValidateResponse,
 )
 from mandit.tokens.service import TokenError
+from mandit.tokens.service_auth import ServiceAuthClaims, require_service_auth
 
 router = APIRouter(prefix="/v1/payment-tokens", tags=["tokens"])
 
@@ -35,6 +36,7 @@ def get_db_session() -> Any:
 @router.post("/redeem", status_code=status.HTTP_200_OK, response_model=TokenRedeemResponse)
 async def redeem_token(
     req: TokenRedeemRequest,
+    service_auth: ServiceAuthClaims = Depends(require_service_auth),
     token_service: TokenService = Depends(get_token_service),
     session: Any = Depends(get_db_session),
 ) -> TokenRedeemResponse:

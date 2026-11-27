@@ -33,6 +33,14 @@ from mandit.tokens.service import (
     create_jws,
     verify_jws,
 )
+from mandit.tokens.service_auth import (
+    ServiceAuthClaims,
+    ServiceAuthError,
+    ServiceAuthVerifier,
+    get_service_auth_verifier,
+    require_service_auth,
+    set_service_auth_verifier,
+)
 
 __all__ = [
     "DecisionProvider",
@@ -43,6 +51,9 @@ __all__ = [
     "PaymentRail",
     "PaymentToken",
     "PaymentTokenModel",
+    "ServiceAuthClaims",
+    "ServiceAuthError",
+    "ServiceAuthVerifier",
     "TokenClaims",
     "TokenError",
     "TokenErrorCode",
@@ -60,6 +71,9 @@ __all__ = [
     "TokenValidateResponse",
     "TokenValidationError",
     "create_jws",
+    "get_service_auth_verifier",
+    "require_service_auth",
     "router",
+    "set_service_auth_verifier",
     "verify_jws",
 ]

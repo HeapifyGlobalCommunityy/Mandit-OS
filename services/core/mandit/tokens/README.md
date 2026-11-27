@@ -19,7 +19,25 @@
    - Re-fetches checkout to catch TOCTOU cart/price tampering (`CHECKOUT_CHANGED`).
    - Database uniqueness constraint prevents multiple tokens per proposal.
 4. **Endpoints**:
-   - `POST /v1/payment-tokens/redeem`: Mock PSP atomic redemption.
+   - `POST /v1/payment-tokens/redeem`: Mock PSP atomic redemption (requires `Authorization: Service <jwt>`).
    - `POST /v1/payment-tokens/validate`: Verification without consumption.
    - `GET /v1/payment-tokens/{token_id}`: Metadata and status only (no JWS).
    - `POST /v1/payment-tokens/{token_id}/revoke`: Administrative/orchestrator revocation.
+
+## Service Authentication Integration Contract
+
+Per `docs/REFERENCE.md §8.3` and `docs/modules/04-policy-and-payments.md §7.3`:
+
+- **Endpoint**: `POST /v1/payment-tokens/redeem`
+- **Protocol**: `Authorization: Service <jwt>` (signed with calling PSP's Ed25519 key, valid for at most 300 seconds).
+- **Core Bootstrap Responsibility**:
+  The Core application assembler / bootstrap owner must register the Mock PSP's public key during application startup:
+  ```python
+  from mandit.tokens.service_auth import get_service_auth_verifier
+
+  # During root application startup:
+  verifier = get_service_auth_verifier()
+  verifier.register_trusted_key("psp-2026-11", psp_public_key)
+  ```
+- **Fail-Closed Default**: If no trusted key is registered, all `/redeem` calls return `401 UNAUTHORIZED`.
+- **Replay Scope**: The `Service <jwt>` authenticates calling service identity and can be reused within its 300s window (no request-level replay cache). Individual payment tokens are protected against reuse at the database level via atomic CAS.
