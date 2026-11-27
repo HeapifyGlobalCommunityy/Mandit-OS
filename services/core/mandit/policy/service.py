@@ -234,27 +234,93 @@ def build_display_payload(
                 }
             )
 
-    tax_minor = (
-        max(0, calc.computed_total_minor - calc.subtotal_minor) if calc.subtotal_minor > 0 else 0
+    # 1. Tax and Fees: Must come from calculation data and remain strictly separate.
+    # Never report fees as tax or calculate tax as a bulk difference.
+    tax_minor = getattr(calc, "tax_minor", 0)
+    fees_minor = getattr(calc, "fees_minor", 0)
+
+    # 2. Merchant Legal Name: Must not use merchant_domain. Use verified legal_name or "unknown".
+    legal_name = (
+        getattr(checkout, "legal_name", None)
+        or getattr(checkout, "merchant_legal_name", None)
+        or getattr(inputs.verification, "merchant_legal_name", None)
     )
-    return {
-        "merchant": {
-            "merchant_id": checkout.merchant_id,
-            "legal_name": checkout.merchant_domain,
-        },
-        "items": [
+    if not legal_name and hasattr(checkout, "merchant") and isinstance(checkout.merchant, dict):
+        legal_name = checkout.merchant.get("legal_name")
+    if (
+        not legal_name
+        and hasattr(inputs.verification, "merchant")
+        and isinstance(inputs.verification.merchant, dict)
+    ):
+        legal_name = inputs.verification.merchant.get("legal_name")
+    if not legal_name:
+        legal_name = "unknown"
+
+    # 3. Delivery ETA: Obtain delivery information from Team 3 contract, otherwise "unknown".
+    delivery_eta = getattr(inputs.verification, "delivery_eta_days", None) or getattr(
+        checkout, "delivery_eta_days", None
+    )
+    if delivery_eta is None:
+        deliv = getattr(inputs.verification, "delivery", None) or getattr(
+            checkout, "delivery", None
+        )
+        if isinstance(deliv, dict):
+            delivery_eta = deliv.get("eta_days")
+        elif deliv is not None and hasattr(deliv, "eta_days"):
+            delivery_eta = deliv.eta_days
+
+    delivery_display: Any = delivery_eta if delivery_eta is not None else "unknown"
+
+    # 4. Item Details: Must use verified product information. Do not fabricate title.
+    lines_source = (
+        getattr(checkout, "lines", None)
+        or getattr(checkout, "items", None)
+        or getattr(inputs.verification, "items", None)
+    )
+    items: list[dict[str, Any]] = []
+    if lines_source and isinstance(lines_source, (list, tuple)):
+        for line in lines_source:
+            if isinstance(line, dict):
+                l_type = line.get("type", "PRODUCT")
+                if l_type == "PRODUCT":
+                    title = line.get("title") or line.get("description") or "unknown"
+                    qty = line.get("quantity", 1)
+                    amt = line.get("amount_minor") or line.get("unit_price_minor") or 0
+                    items.append({"title": title, "quantity": qty, "amount_minor": amt})
+            elif hasattr(line, "title") or hasattr(line, "description"):
+                title = (
+                    getattr(line, "title", None) or getattr(line, "description", None) or "unknown"
+                )
+                qty = getattr(line, "quantity", 1)
+                amt = getattr(line, "amount_minor", 0)
+                items.append({"title": title, "quantity": qty, "amount_minor": amt})
+
+    if not items:
+        product_title = (
+            getattr(checkout, "item_title", None)
+            or getattr(checkout, "product_title", None)
+            or getattr(inputs.verification, "item_title", None)
+        )
+        items = [
             {
-                "title": f"Purchase at {checkout.merchant_domain}",
+                "title": product_title if product_title else "unknown",
                 "quantity": 1,
                 "amount_minor": calc.subtotal_minor or checkout.amount_minor,
             }
-        ],
+        ]
+
+    return {
+        "merchant": {
+            "merchant_id": checkout.merchant_id or "unknown",
+            "legal_name": legal_name,
+        },
+        "items": items,
         "tax_minor": tax_minor,
-        "fees_minor": 0,
+        "fees_minor": fees_minor,
         "total_minor": checkout.amount_minor,
-        "currency": checkout.currency,
-        "payment_method": inputs.payment_method,
-        "delivery_eta_days": getattr(inputs.verification, "delivery_eta_days", None) or 3,
+        "currency": checkout.currency or "unknown",
+        "payment_method": inputs.payment_method or "unknown",
+        "delivery_eta_days": delivery_display,
         "reasons": reasons,
     }
 
@@ -308,10 +374,104 @@ class DecisionServiceImpl:
         digest = hashing.digest(inputs_dict)
         return snapshot_id, digest
 
+    async def _execute_in_managed_session(self, fn: Any) -> Any:
+        """Execute a coroutine within a committed transaction from session_factory."""
+        if self.session_factory is None:
+            raise ValueError("session_factory is required when session is not provided")
+
+        session_ctx = self.session_factory()
+
+        # Handle async session context manager (AsyncSession)
+        if hasattr(session_ctx, "__aenter__"):
+            async with session_ctx as sess:
+                if (
+                    hasattr(sess, "begin")
+                    and callable(sess.begin)
+                    and not (hasattr(sess, "in_transaction") and sess.in_transaction())
+                ):
+                    async with sess.begin():
+                        return await fn(sess)
+                else:
+                    try:
+                        result = await fn(sess)
+                        if hasattr(sess, "commit"):
+                            cm = sess.commit()
+                            if hasattr(cm, "__await__"):
+                                await cm
+                        return result
+                    except Exception:
+                        if hasattr(sess, "rollback"):
+                            rb = sess.rollback()
+                            if hasattr(rb, "__await__"):
+                                await rb
+                        raise
+
+        # Handle sync session context manager (Session)
+        elif hasattr(session_ctx, "__enter__"):
+            with session_ctx as sess:
+                if (
+                    hasattr(sess, "begin")
+                    and callable(sess.begin)
+                    and not (hasattr(sess, "in_transaction") and sess.in_transaction())
+                ):
+                    with sess.begin():
+                        return await fn(sess)
+                else:
+                    try:
+                        result = await fn(sess)
+                        if hasattr(sess, "commit"):
+                            sess.commit()
+                        return result
+                    except Exception:
+                        if hasattr(sess, "rollback"):
+                            sess.rollback()
+                        raise
+        else:
+            sess = session_ctx
+            try:
+                if (
+                    hasattr(sess, "begin")
+                    and callable(sess.begin)
+                    and not (hasattr(sess, "in_transaction") and sess.in_transaction())
+                ):
+                    with sess.begin():
+                        return await fn(sess)
+                else:
+                    result = await fn(sess)
+                    if hasattr(sess, "commit"):
+                        cm = sess.commit()
+                        if hasattr(cm, "__await__"):
+                            await cm
+                    return result
+            except Exception:
+                if hasattr(sess, "rollback"):
+                    rb = sess.rollback()
+                    if hasattr(rb, "__await__"):
+                        await rb
+                raise
+            finally:
+                if hasattr(sess, "close"):
+                    cl = sess.close()
+                    if hasattr(cl, "__await__"):
+                        await cl
+
     async def evaluate_with_inputs(
         self, inputs: FrozenDecisionInputs, session: Any = None
     ) -> Decision:
         """Run policy evaluation with already constructed FrozenDecisionInputs."""
+        if session is None and self.session_factory is not None:
+            return await self._execute_in_managed_session(
+                lambda sess: self._evaluate_with_inputs_and_session(inputs, sess)
+            )
+        if session is None:
+            raise ValueError(
+                "A database session or session_factory is required to evaluate decisions"
+            )
+        return await self._evaluate_with_inputs_and_session(inputs, session)
+
+    async def _evaluate_with_inputs_and_session(
+        self, inputs: FrozenDecisionInputs, session: Any
+    ) -> Decision:
         snap_id, inputs_hash = await self._snapshot_inputs(session, inputs)
         result = self.engine.decide(inputs)
 
@@ -610,14 +770,14 @@ class DecisionServiceImpl:
 
     async def evaluate(self, proposal_id: str, session: Any = None) -> Decision:
         """Gather inputs and run policy evaluation for the proposal."""
-        if self.session_factory is not None and session is None:
-            ctx = self.session_factory()
-            if hasattr(ctx, "__aenter__"):
-                async with ctx as sess:
-                    return await self._evaluate_with_session(proposal_id, sess)
-            elif hasattr(ctx, "__enter__"):
-                with ctx as sess:
-                    return await self._evaluate_with_session(proposal_id, sess)
+        if session is None and self.session_factory is not None:
+            return await self._execute_in_managed_session(
+                lambda sess: self._evaluate_with_session(proposal_id, sess)
+            )
+        if session is None:
+            raise ValueError(
+                "A database session or session_factory is required to evaluate decisions"
+            )
         return await self._evaluate_with_session(proposal_id, session)
 
     async def build_inputs(
@@ -655,29 +815,183 @@ class DecisionServiceImpl:
         merchant_id = verification.checkout.merchant_id
         merchant_domain = verification.checkout.merchant_domain
 
-        if self.identity_service is not None:
-            if hasattr(self.identity_service, "get_identity_result"):
-                identity = await self.identity_service.get_identity_result(proposal_id)
-            elif hasattr(self.identity_service, "get_agent"):
-                agent = await self.identity_service.get_agent(agent_id)
-                from mandit.policy.schemas import IdentityResult
-
-                identity = IdentityResult(
-                    agent=agent,
-                    is_active=True,
-                    operator_verified=True,
-                    kya_token_valid=True,
-                    key_bound=True,
-                )
-            else:
-                identity = await self.identity_service.get(agent_id)
-        else:
-            raise ValueError("IdentityService is required")
-
         if self.mandate_service is not None:
             mandate = await self.mandate_service.get(mandate_id)
         else:
             raise ValueError("MandateService is required")
+
+        # Resolution of agent identity (fails closed if unavailable or invalid)
+        from mandit.policy.schemas import AgentContext, IdentityResult
+
+        if self.identity_service is None:
+            identity = IdentityResult(
+                agent=AgentContext(
+                    agent_id=agent_id,
+                    operator_id="unknown",
+                    key_id="unknown",
+                    key_thumbprint="",
+                    scopes=frozenset(),
+                    credential_id="unknown",
+                    verified_at=evaluated_at,
+                ),
+                is_active=False,
+                operator_verified=False,
+                kya_token_valid=False,
+                key_bound=False,
+            )
+        else:
+            try:
+                # 1. Team 1 standard IdentityService protocol: get_agent + is_active
+                if hasattr(self.identity_service, "get_agent"):
+                    agent = await self.identity_service.get_agent(agent_id)
+
+                    key_id = getattr(agent, "key_id", None)
+                    if hasattr(self.identity_service, "is_active"):
+                        raw_active = await self.identity_service.is_active(agent_id, key_id=key_id)
+                        is_active = raw_active is True
+                    elif agent is not None and hasattr(agent, "status"):
+                        is_active = getattr(agent, "status", None) == "ACTIVE"
+                    elif agent is not None and hasattr(agent, "is_active"):
+                        is_active = getattr(agent, "is_active", None) is True
+                    else:
+                        is_active = False
+
+                    operator_id = getattr(agent, "operator_id", None)
+                    if hasattr(self.identity_service, "get_operator") and operator_id:
+                        op = await self.identity_service.get_operator(operator_id)
+                        op_verified_at = getattr(op, "verified_at", None)
+                        operator_verified = (
+                            getattr(op, "status", None) == "VERIFIED"
+                            or (op_verified_at is not None and op_verified_at <= evaluated_at)
+                            or getattr(op, "verified", None) is True
+                        )
+                    elif agent is not None and hasattr(agent, "operator_verified"):
+                        operator_verified = getattr(agent, "operator_verified", None) is True
+                    else:
+                        operator_verified = False
+
+                    if agent is not None and hasattr(agent, "kya_token_valid"):
+                        kya_token_valid = getattr(agent, "kya_token_valid", None) is True
+                    elif (
+                        isinstance(agent, AgentContext)
+                        and agent.credential_id
+                        and agent.verified_at
+                    ):
+                        kya_token_valid = (
+                            timedelta(0)
+                            <= evaluated_at - agent.verified_at
+                            <= timedelta(minutes=15)
+                        )
+                    else:
+                        kya_token_valid = False
+
+                    if agent is not None and hasattr(agent, "key_bound"):
+                        key_bound = getattr(agent, "key_bound", None) is True
+                    elif (
+                        mandate is not None
+                        and mandate.agent_id == agent_id
+                        and getattr(agent, "key_thumbprint", None)
+                        and mandate.agent_key_thumbprint == getattr(agent, "key_thumbprint", None)
+                    ):
+                        key_bound = True
+                    else:
+                        key_bound = False
+
+                    if isinstance(agent, AgentContext):
+                        agent_ctx = agent
+                    elif agent is not None and hasattr(agent, "agent_id"):
+                        agent_ctx = AgentContext(
+                            agent_id=str(getattr(agent, "agent_id", agent_id)),
+                            operator_id=str(getattr(agent, "operator_id", "unknown")),
+                            key_id=str(getattr(agent, "key_id", "unknown")),
+                            key_thumbprint=str(getattr(agent, "key_thumbprint", "")),
+                            scopes=frozenset(getattr(agent, "scopes", ())),
+                            credential_id=str(getattr(agent, "credential_id", "unknown")),
+                            verified_at=getattr(agent, "verified_at", evaluated_at),
+                        )
+                    else:
+                        agent_ctx = AgentContext(
+                            agent_id=agent_id,
+                            operator_id="unknown",
+                            key_id="unknown",
+                            key_thumbprint="",
+                            scopes=frozenset(),
+                            credential_id="unknown",
+                            verified_at=evaluated_at,
+                        )
+
+                    identity = IdentityResult(
+                        agent=agent_ctx,
+                        is_active=is_active is True,
+                        operator_verified=operator_verified is True,
+                        kya_token_valid=kya_token_valid is True,
+                        key_bound=key_bound is True,
+                    )
+                elif hasattr(self.identity_service, "get_identity_result"):
+                    raw_id = await self.identity_service.get_identity_result(proposal_id)
+                    if isinstance(raw_id, IdentityResult):
+                        identity = IdentityResult(
+                            agent=raw_id.agent,
+                            is_active=raw_id.is_active is True,
+                            operator_verified=raw_id.operator_verified is True,
+                            kya_token_valid=raw_id.kya_token_valid is True,
+                            key_bound=raw_id.key_bound is True,
+                        )
+                    else:
+                        identity = IdentityResult(
+                            agent=getattr(
+                                raw_id,
+                                "agent",
+                                AgentContext(
+                                    agent_id=agent_id,
+                                    operator_id="unknown",
+                                    key_id="unknown",
+                                    key_thumbprint="",
+                                    scopes=frozenset(),
+                                    credential_id="unknown",
+                                    verified_at=evaluated_at,
+                                ),
+                            ),
+                            is_active=getattr(raw_id, "is_active", None) is True,
+                            operator_verified=getattr(raw_id, "operator_verified", None) is True,
+                            kya_token_valid=getattr(raw_id, "kya_token_valid", None) is True,
+                            key_bound=getattr(raw_id, "key_bound", None) is True,
+                        )
+                else:
+                    agent = await self.identity_service.get(agent_id)
+                    identity = IdentityResult(
+                        agent=agent
+                        if isinstance(agent, AgentContext)
+                        else AgentContext(
+                            agent_id=agent_id,
+                            operator_id="unknown",
+                            key_id="unknown",
+                            key_thumbprint="",
+                            scopes=frozenset(),
+                            credential_id="unknown",
+                            verified_at=evaluated_at,
+                        ),
+                        is_active=getattr(agent, "is_active", None) is True,
+                        operator_verified=getattr(agent, "operator_verified", None) is True,
+                        kya_token_valid=getattr(agent, "kya_token_valid", None) is True,
+                        key_bound=getattr(agent, "key_bound", None) is True,
+                    )
+            except Exception:
+                identity = IdentityResult(
+                    agent=AgentContext(
+                        agent_id=agent_id,
+                        operator_id="unknown",
+                        key_id="unknown",
+                        key_thumbprint="",
+                        scopes=frozenset(),
+                        credential_id="unknown",
+                        verified_at=evaluated_at,
+                    ),
+                    is_active=False,
+                    operator_verified=False,
+                    kya_token_valid=False,
+                    key_bound=False,
+                )
 
         if self.safety_service is not None:
             if hasattr(self.safety_service, "get_risk_summary"):

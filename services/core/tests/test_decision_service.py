@@ -14,7 +14,9 @@ Tests:
 """
 
 import asyncio
+import dataclasses
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -679,3 +681,654 @@ def test_deterministic_replay_from_snapshot(base_inputs):
     assert replay_res.trust_score == initial_res.trust_score
     assert replay_res.rules_fired == initial_res.rules_fired
     assert hashing.digest(to_snapshot_dict(base_inputs)) == digest1
+
+
+# --- Regression Tests for Technical Lead Review Fixes ---
+
+
+class MockProposal:
+    def __init__(
+        self,
+        proposal_id: str,
+        proposal_hash: str,
+        mandate_id: str = "man_01JD3Y00000000000000000001",
+        agent_id: str = "agent_shopping_01",
+    ):
+        self.proposal_id = proposal_id
+        self.proposal_hash = proposal_hash
+        self.transaction_id = f"txn_{proposal_id}"
+        self.mandate_id = mandate_id
+        self.agent_id = agent_id
+        self.payment_method = "CARD_TOKEN"
+
+
+def test_build_inputs_revoked_agent_cannot_receive_allow(db_session, signer, base_inputs):
+    """Regression: Revoked agent must fail closed and receive BLOCK (HG-01)."""
+
+    async def _run():
+        grounding_mock = AsyncMock()
+        grounding_mock.get_proposal.return_value = MockProposal(
+            base_inputs.proposal_id,
+            base_inputs.proposal_hash,
+            mandate_id=base_inputs.mandate.mandate_id,
+        )
+        grounding_mock.latest_verification.return_value = base_inputs.verification
+
+        class RevokedIdentityService:
+            async def get_agent(self, agent_id: str):
+                return base_inputs.identity.agent
+
+            async def is_active(self, agent_id: str, key_id: str | None = None) -> bool:
+                return False
+
+        mandate_mock = AsyncMock()
+        mandate_mock.get.return_value = base_inputs.mandate
+
+        safety_mock = AsyncMock()
+        safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+        svc = DecisionServiceImpl(
+            signer=signer,
+            grounding_service=grounding_mock,
+            identity_service=RevokedIdentityService(),
+            mandate_service=mandate_mock,
+            safety_service=safety_mock,
+        )
+
+        decision = await svc.evaluate(base_inputs.proposal_id, session=db_session)
+        assert decision.outcome == DecisionOutcome.BLOCK
+        assert decision.stage == EvaluationStage.HARD_GATE
+        assert any(r.rule_id == "HG-01" and r.code == "AGENT_REVOKED" for r in decision.rules_fired)
+
+    asyncio.run(_run())
+
+
+def test_build_inputs_identity_service_unavailable_fails_closed(db_session, signer, base_inputs):
+    """Regression: When identity service is unavailable or throws,
+    evaluation must fail closed to BLOCK.
+    """
+
+    async def _run():
+        grounding_mock = AsyncMock()
+        grounding_mock.get_proposal.return_value = MockProposal(
+            base_inputs.proposal_id,
+            base_inputs.proposal_hash,
+            mandate_id=base_inputs.mandate.mandate_id,
+        )
+        grounding_mock.latest_verification.return_value = base_inputs.verification
+
+        mandate_mock = AsyncMock()
+        mandate_mock.get.return_value = base_inputs.mandate
+
+        safety_mock = AsyncMock()
+        safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+        # Case A: identity_service is None
+        svc_none = DecisionServiceImpl(
+            signer=signer,
+            grounding_service=grounding_mock,
+            identity_service=None,
+            mandate_service=mandate_mock,
+            safety_service=safety_mock,
+        )
+        decision_none = await svc_none.evaluate(base_inputs.proposal_id, session=db_session)
+        assert decision_none.outcome == DecisionOutcome.BLOCK
+        assert decision_none.stage == EvaluationStage.HARD_GATE
+
+        # Case B: identity_service throws a network/service exception
+        class FailingIdentityService:
+            async def get_agent(self, agent_id: str):
+                raise RuntimeError("Identity service connection timeout")
+
+            async def is_active(self, agent_id: str, key_id: str | None = None) -> bool:
+                raise RuntimeError("Identity service connection timeout")
+
+        svc_err = DecisionServiceImpl(
+            signer=signer,
+            grounding_service=grounding_mock,
+            identity_service=FailingIdentityService(),
+            mandate_service=mandate_mock,
+            safety_service=safety_mock,
+        )
+        decision_err = await svc_err.evaluate(base_inputs.proposal_id, session=db_session)
+        assert decision_err.outcome == DecisionOutcome.BLOCK
+        assert decision_err.stage == EvaluationStage.HARD_GATE
+
+    asyncio.run(_run())
+
+
+def test_build_inputs_missing_verification_info_does_not_default_to_true(
+    db_session, signer, base_inputs
+):
+    """Regression: Missing operator/KYA/key verification data must NOT default to True."""
+
+    async def _run():
+        grounding_mock = AsyncMock()
+        grounding_mock.get_proposal.return_value = MockProposal(
+            base_inputs.proposal_id,
+            base_inputs.proposal_hash,
+            mandate_id=base_inputs.mandate.mandate_id,
+        )
+        grounding_mock.latest_verification.return_value = base_inputs.verification
+
+        class IncompleteAgentRecord:
+            agent_id = "agent_shopping_01"
+            operator_id = "op_acme"
+            key_id = "key_01"
+            key_thumbprint = "thumb_01"
+            scopes = frozenset({"purchase:propose"})
+            credential_id = "cred_01"
+            status = "ACTIVE"
+
+        class IncompleteIdentityService:
+            async def get_agent(self, agent_id: str):
+                return IncompleteAgentRecord()
+
+            async def is_active(self, agent_id: str, key_id: str | None = None) -> bool:
+                return True
+
+        mandate_mock = AsyncMock()
+        mandate_mock.get.return_value = base_inputs.mandate
+
+        safety_mock = AsyncMock()
+        safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+        svc = DecisionServiceImpl(
+            signer=signer,
+            grounding_service=grounding_mock,
+            identity_service=IncompleteIdentityService(),
+            mandate_service=mandate_mock,
+            safety_service=safety_mock,
+        )
+
+        decision = await svc.evaluate(base_inputs.proposal_id, session=db_session)
+        assert decision.outcome == DecisionOutcome.BLOCK
+        assert decision.stage == EvaluationStage.HARD_GATE
+        assert any(
+            r.rule_id == "HG-01"
+            and r.code in ("OPERATOR_NOT_VERIFIED", "KYA_TOKEN_INVALID", "KEY_NOT_BOUND")
+            for r in decision.rules_fired
+        )
+
+    asyncio.run(_run())
+
+
+def test_build_inputs_explicit_fake_identity_service_works(db_session, signer, base_inputs):
+    """Regression: Explicitly injected fake identity service with verified data works in tests."""
+
+    async def _run():
+        grounding_mock = AsyncMock()
+        grounding_mock.get_proposal.return_value = MockProposal(
+            base_inputs.proposal_id,
+            base_inputs.proposal_hash,
+            mandate_id=base_inputs.mandate.mandate_id,
+        )
+        grounding_mock.latest_verification.return_value = base_inputs.verification
+
+        class ExplicitVerifiedIdentityService:
+            async def get_identity_result(self, proposal_id: str):
+                return base_inputs.identity
+
+        mandate_mock = AsyncMock()
+        mandate_mock.get.return_value = base_inputs.mandate
+
+        safety_mock = AsyncMock()
+        safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+        user_history_mock = AsyncMock()
+        user_history_mock.get_user_merchant_history.return_value = 3
+
+        svc = DecisionServiceImpl(
+            signer=signer,
+            grounding_service=grounding_mock,
+            identity_service=ExplicitVerifiedIdentityService(),
+            mandate_service=mandate_mock,
+            safety_service=safety_mock,
+            user_history_service=user_history_mock,
+        )
+
+        decision = await svc.evaluate(base_inputs.proposal_id, session=db_session)
+        assert decision.outcome == DecisionOutcome.ALLOW
+
+    asyncio.run(_run())
+
+
+def test_build_display_payload_fees_and_tax_separated(base_inputs):
+    """Regression: Fees and tax must be displayed separately and never conflated."""
+    from mandit.policy.service import build_display_payload
+
+    calc = dataclasses.replace(
+        base_inputs.verification.calculation,
+        subtotal_minor=5000000,
+        tax_minor=900000,
+        fees_minor=150000,
+        computed_total_minor=6050000,
+    )
+    verif = dataclasses.replace(base_inputs.verification, calculation=calc)
+    inputs = dataclasses.replace(base_inputs, verification=verif)
+
+    display = build_display_payload(inputs, ())
+    assert display["fees_minor"] == 150000
+    assert display["tax_minor"] == 900000
+    assert display["fees_minor"] != display["tax_minor"]
+
+
+def test_build_display_payload_missing_fields_display_unknown(base_inputs):
+    """Regression: Missing delivery, legal name, and product titles must display 'unknown'."""
+    from mandit.policy.service import build_display_payload
+
+    # Checkout without legal_name, lines, or delivery
+    checkout = CheckoutSnapshot(
+        checkout_id="chk_test_empty",
+        checkout_hash=base_inputs.proposal_hash,
+        merchant_id="mer_croma",
+        merchant_domain="croma.example.com",
+        payee_id="acq_croma",
+        amount_minor=5000000,
+        currency="INR",
+        merchant_signature_valid=True,
+        expires_at=base_inputs.evaluated_at + timedelta(minutes=15),
+    )
+    verif = dataclasses.replace(base_inputs.verification, checkout=checkout)
+    inputs = dataclasses.replace(base_inputs, verification=verif)
+
+    display = build_display_payload(inputs, ())
+    # Must not use merchant_domain as legal name
+    assert display["merchant"]["legal_name"] == "unknown"
+    assert display["merchant"]["legal_name"] != checkout.merchant_domain
+    # Must not hardcode 3 days
+    assert display["delivery_eta_days"] == "unknown"
+    assert display["delivery_eta_days"] != 3
+    # Must not fabricate title
+    assert display["items"][0]["title"] == "unknown"
+    assert "Purchase at" not in display["items"][0]["title"]
+
+
+def test_build_display_payload_verified_info_used(base_inputs):
+    """Regression: Verified legal name, delivery ETA, and product lines are accurately included."""
+    from mandit.policy.service import build_display_payload
+
+    # Attach dynamic attributes simulating verified Team 3 data
+    checkout = base_inputs.verification.checkout
+    object.__setattr__(checkout, "legal_name", "Croma Retail Synthetic Ltd")
+    object.__setattr__(checkout, "delivery_eta_days", 4)
+    object.__setattr__(
+        checkout,
+        "lines",
+        [
+            {
+                "type": "PRODUCT",
+                "title": "ASUS TUF A15 Gaming Laptop",
+                "quantity": 1,
+                "amount_minor": 6482966,
+            }
+        ],
+    )
+
+    display = build_display_payload(base_inputs, ())
+    assert display["merchant"]["legal_name"] == "Croma Retail Synthetic Ltd"
+    assert display["delivery_eta_days"] == 4
+    assert display["items"][0]["title"] == "ASUS TUF A15 Gaming Laptop"
+
+
+def test_session_factory_commits_decision_and_event(signer, base_inputs):
+    """Regression: Decisions and events evaluated with session_factory
+    are committed across sessions.
+    """
+    from mandit.common.events import EventOutboxModel
+    from mandit.policy.models import DecisionModel
+
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    grounding_mock = AsyncMock()
+    grounding_mock.get_proposal.return_value = MockProposal(
+        base_inputs.proposal_id,
+        base_inputs.proposal_hash,
+        mandate_id=base_inputs.mandate.mandate_id,
+    )
+    grounding_mock.latest_verification.return_value = base_inputs.verification
+
+    class ExplicitVerifiedIdentityService:
+        async def get_identity_result(self, proposal_id: str):
+            return base_inputs.identity
+
+    mandate_mock = AsyncMock()
+    mandate_mock.get.return_value = base_inputs.mandate
+
+    safety_mock = AsyncMock()
+    safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+    user_history_mock = AsyncMock()
+    user_history_mock.get_user_merchant_history.return_value = 3
+
+    svc = DecisionServiceImpl(
+        signer=signer,
+        session_factory=SessionLocal,
+        grounding_service=grounding_mock,
+        identity_service=ExplicitVerifiedIdentityService(),
+        mandate_service=mandate_mock,
+        safety_service=safety_mock,
+        user_history_service=user_history_mock,
+    )
+
+    async def _run():
+        # Evaluate without providing an outer session
+        decision = await svc.evaluate(base_inputs.proposal_id)
+        assert decision.outcome == DecisionOutcome.ALLOW
+
+        # Open a brand new session from the engine to verify commit persistence
+        with SessionLocal() as verify_sess:
+            saved_dec = verify_sess.get(DecisionModel, decision.decision_id)
+            assert saved_dec is not None
+            assert saved_dec.decision_id == decision.decision_id
+            assert saved_dec.outcome == "ALLOW"
+
+            # Verify DECISION_MADE event is also committed in event_outbox
+            outbox_events = verify_sess.query(EventOutboxModel).all()
+            assert len(outbox_events) > 0
+            event_types = [
+                e.event_draft.get("event_type")
+                for e in outbox_events
+                if isinstance(e.event_draft, dict)
+            ]
+            assert "DECISION_MADE" in event_types
+
+    asyncio.run(_run())
+
+
+def test_persistence_failure_never_returns_allow(signer, base_inputs):
+    """Regression: If database commit/flush fails, evaluate() must raise and NEVER return ALLOW."""
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+
+    grounding_mock = AsyncMock()
+    grounding_mock.get_proposal.return_value = MockProposal(
+        base_inputs.proposal_id,
+        base_inputs.proposal_hash,
+        mandate_id=base_inputs.mandate.mandate_id,
+    )
+    grounding_mock.latest_verification.return_value = base_inputs.verification
+
+    class ExplicitVerifiedIdentityService:
+        async def get_identity_result(self, proposal_id: str):
+            return base_inputs.identity
+
+    mandate_mock = AsyncMock()
+    mandate_mock.get.return_value = base_inputs.mandate
+
+    safety_mock = AsyncMock()
+    safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+    user_history_mock = AsyncMock()
+    user_history_mock.get_user_merchant_history.return_value = 3
+
+    # Mock repository that fails on save_decision
+    failing_repo = DecisionRepository()
+    failing_repo.save_decision = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("DB persistence failure: connection reset")
+    )
+
+    svc = DecisionServiceImpl(
+        repository=failing_repo,
+        signer=signer,
+        session_factory=SessionLocal,
+        grounding_service=grounding_mock,
+        identity_service=ExplicitVerifiedIdentityService(),
+        mandate_service=mandate_mock,
+        safety_service=safety_mock,
+        user_history_service=user_history_mock,
+    )
+
+    async def _run():
+        with pytest.raises(RuntimeError, match="DB persistence failure"):
+            await svc.evaluate(base_inputs.proposal_id)
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize("invalid_val", ["false", "0", 1, 0, "yes", None, "true"])
+def test_identity_verification_rejects_non_boolean_is_active(
+    db_session, signer, base_inputs, invalid_val
+):
+    """Regression: Non-boolean truthy/falsy values for is_active must produce BLOCK (HG-01)."""
+
+    async def _run():
+        grounding_mock = AsyncMock()
+        grounding_mock.get_proposal.return_value = MockProposal(
+            base_inputs.proposal_id,
+            base_inputs.proposal_hash,
+            mandate_id=base_inputs.mandate.mandate_id,
+        )
+        grounding_mock.latest_verification.return_value = base_inputs.verification
+
+        class NonBoolIdentityService:
+            async def get_agent(self, agent_id: str):
+                return base_inputs.identity.agent
+
+            async def is_active(self, agent_id: str, key_id: str | None = None) -> Any:
+                return invalid_val
+
+        mandate_mock = AsyncMock()
+        mandate_mock.get.return_value = base_inputs.mandate
+
+        safety_mock = AsyncMock()
+        safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+        user_history_mock = AsyncMock()
+        user_history_mock.get_user_merchant_history.return_value = 3
+
+        svc = DecisionServiceImpl(
+            signer=signer,
+            grounding_service=grounding_mock,
+            identity_service=NonBoolIdentityService(),
+            mandate_service=mandate_mock,
+            safety_service=safety_mock,
+            user_history_service=user_history_mock,
+        )
+
+        decision = await svc.evaluate(base_inputs.proposal_id, session=db_session)
+        assert decision.outcome == DecisionOutcome.BLOCK
+        assert decision.stage == EvaluationStage.HARD_GATE
+        assert any(r.rule_id == "HG-01" and r.code == "AGENT_REVOKED" for r in decision.rules_fired)
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    "field_name, expected_rule_code",
+    [
+        ("operator_verified", "OPERATOR_NOT_VERIFIED"),
+        ("kya_token_valid", "KYA_TOKEN_INVALID"),
+        ("key_bound", "KEY_NOT_BOUND"),
+    ],
+)
+@pytest.mark.parametrize("invalid_val", ["false", "0", 1, 0, "yes", "true"])
+def test_identity_verification_rejects_non_boolean_attributes(
+    db_session, signer, base_inputs, field_name, expected_rule_code, invalid_val
+):
+    """Regression: Non-boolean values for operator_verified, kya_token_valid,
+    or key_bound must BLOCK.
+    """
+
+    async def _run():
+        grounding_mock = AsyncMock()
+        grounding_mock.get_proposal.return_value = MockProposal(
+            base_inputs.proposal_id,
+            base_inputs.proposal_hash,
+            mandate_id=base_inputs.mandate.mandate_id,
+        )
+        grounding_mock.latest_verification.return_value = base_inputs.verification
+
+        class AgentWithAttribute:
+            agent_id = "agent_shopping_01"
+            operator_id = "op_acme"
+            key_id = "key_01"
+            key_thumbprint = base_inputs.mandate.agent_key_thumbprint
+            scopes = frozenset({"purchase:propose"})
+            credential_id = "cred_01"
+            verified_at = base_inputs.evaluated_at - timedelta(minutes=5)
+            status = "ACTIVE"
+            operator_verified = True
+            kya_token_valid = True
+            key_bound = True
+
+        agent_obj = AgentWithAttribute()
+        setattr(agent_obj, field_name, invalid_val)
+
+        class NonBoolAttrIdentityService:
+            async def get_agent(self, agent_id: str):
+                return agent_obj
+
+            async def is_active(self, agent_id: str, key_id: str | None = None) -> bool:
+                return True
+
+        mandate_mock = AsyncMock()
+        mandate_mock.get.return_value = base_inputs.mandate
+
+        safety_mock = AsyncMock()
+        safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+        user_history_mock = AsyncMock()
+        user_history_mock.get_user_merchant_history.return_value = 3
+
+        svc = DecisionServiceImpl(
+            signer=signer,
+            grounding_service=grounding_mock,
+            identity_service=NonBoolAttrIdentityService(),
+            mandate_service=mandate_mock,
+            safety_service=safety_mock,
+            user_history_service=user_history_mock,
+        )
+
+        decision = await svc.evaluate(base_inputs.proposal_id, session=db_session)
+        assert decision.outcome == DecisionOutcome.BLOCK
+        assert decision.stage == EvaluationStage.HARD_GATE
+        assert any(
+            r.rule_id == "HG-01" and r.code == expected_rule_code for r in decision.rules_fired
+        )
+
+    asyncio.run(_run())
+
+
+def test_build_inputs_rejects_future_dated_kya_timestamp(db_session, signer, base_inputs):
+    """Regression: Future-dated KYA token timestamp must fail closed and receive BLOCK."""
+
+    async def _run():
+        grounding_mock = AsyncMock()
+        grounding_mock.get_proposal.return_value = MockProposal(
+            base_inputs.proposal_id,
+            base_inputs.proposal_hash,
+            mandate_id=base_inputs.mandate.mandate_id,
+        )
+        grounding_mock.latest_verification.return_value = base_inputs.verification
+
+        future_verified_at = datetime.now(UTC) + timedelta(minutes=5)
+        future_agent = AgentContext(
+            agent_id="agent_shopping_01",
+            operator_id="op_acme",
+            key_id="key_01",
+            key_thumbprint=base_inputs.mandate.agent_key_thumbprint,
+            scopes=frozenset({"purchase:propose"}),
+            credential_id="cred_01",
+            verified_at=future_verified_at,
+        )
+
+        class FutureIdentityService:
+            async def get_agent(self, agent_id: str):
+                return future_agent
+
+            async def is_active(self, agent_id: str, key_id: str | None = None) -> bool:
+                return True
+
+            async def get_operator(self, operator_id: str):
+                class OperatorRecord:
+                    status = "VERIFIED"
+
+                return OperatorRecord()
+
+        mandate_mock = AsyncMock()
+        mandate_mock.get.return_value = base_inputs.mandate
+
+        safety_mock = AsyncMock()
+        safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+        user_history_mock = AsyncMock()
+        user_history_mock.get_user_merchant_history.return_value = 3
+
+        svc = DecisionServiceImpl(
+            signer=signer,
+            grounding_service=grounding_mock,
+            identity_service=FutureIdentityService(),
+            mandate_service=mandate_mock,
+            safety_service=safety_mock,
+            user_history_service=user_history_mock,
+        )
+
+        decision = await svc.evaluate(base_inputs.proposal_id, session=db_session)
+        assert decision.outcome == DecisionOutcome.BLOCK
+        assert decision.stage == EvaluationStage.HARD_GATE
+        assert any(
+            r.rule_id == "HG-01" and r.code == "KYA_TOKEN_INVALID" for r in decision.rules_fired
+        )
+
+    asyncio.run(_run())
+
+
+def test_build_inputs_accepts_valid_boolean_true(db_session, signer, base_inputs):
+    """Regression: Literal boolean True for all identity checks succeeds with ALLOW."""
+
+    async def _run():
+        grounding_mock = AsyncMock()
+        grounding_mock.get_proposal.return_value = MockProposal(
+            base_inputs.proposal_id,
+            base_inputs.proposal_hash,
+            mandate_id=base_inputs.mandate.mandate_id,
+        )
+        grounding_mock.latest_verification.return_value = base_inputs.verification
+
+        class ValidIdentityService:
+            async def get_agent(self, agent_id: str):
+                return AgentContext(
+                    agent_id="agent_shopping_01",
+                    operator_id="op_acme",
+                    key_id="key_01",
+                    key_thumbprint=base_inputs.mandate.agent_key_thumbprint,
+                    scopes=frozenset({"purchase:propose"}),
+                    credential_id="cred_01",
+                    verified_at=datetime.now(UTC) - timedelta(minutes=5),
+                )
+
+            async def is_active(self, agent_id: str, key_id: str | None = None) -> bool:
+                return True
+
+            async def get_operator(self, operator_id: str):
+                class OperatorRecord:
+                    status = "VERIFIED"
+
+                return OperatorRecord()
+
+        mandate_mock = AsyncMock()
+        mandate_mock.get.return_value = base_inputs.mandate
+
+        safety_mock = AsyncMock()
+        safety_mock.get_risk_summary.return_value = base_inputs.risk
+
+        user_history_mock = AsyncMock()
+        user_history_mock.get_user_merchant_history.return_value = 3
+
+        svc = DecisionServiceImpl(
+            signer=signer,
+            grounding_service=grounding_mock,
+            identity_service=ValidIdentityService(),
+            mandate_service=mandate_mock,
+            safety_service=safety_mock,
+            user_history_service=user_history_mock,
+        )
+
+        decision = await svc.evaluate(base_inputs.proposal_id, session=db_session)
+        assert decision.outcome == DecisionOutcome.ALLOW
+
+    asyncio.run(_run())
