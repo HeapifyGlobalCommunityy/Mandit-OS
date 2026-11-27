@@ -527,7 +527,7 @@ A separate service with its own database and keys. Card and UPI semantics follow
 | Endpoint | Request | Response | Notes |
 |---|---|---|---|
 | `POST /psp/v1/card/scoped-credentials` | `{ "mandit_token", "merchant_id", "max_amount_minor", "currency", "expires_at" }` | `201 { "credential_id": "spc_...", "status": "ACTIVE" }` | Calls Mandit `/v1/payment-tokens/redeem` first; refuses if it is rejected |
-| `POST /psp/v1/card/authorize` | `{ "credential_id", "merchant_id", "amount_minor", "currency", "idempotency_key" }` | `200 { "psp_payment_id", "status": "AUTHORIZED" \| "FAILED", "decline_code" }` | Enforces seller, `amount ≤ max`, expiry and single use **independently** (defence in depth) |
+| `POST /psp/v1/card/authorize` | `{ "credential_id", "merchant_id", "amount_minor", "currency", "idempotency_key" }` | `200 { "psp_payment_id", "status": "AUTHORIZED" \| "FAILED", "decline_code" }` | Enforces seller, `amount ≤ max`, expiry and single use **independently** via atomic CAS (`UPDATE ... WHERE status = 'ACTIVE'`) (defence in depth) |
 | `POST /psp/v1/card/capture` | `{ "psp_payment_id", "amount_minor" }` | `200 { "status": "CAPTURED" }` | `amount ≤ authorized`, otherwise `CAPTURE_EXCEEDS_AUTH` |
 | `GET /psp/v1/payments/{id}` | n/a | `200 { "psp_payment_id", "status", "amount_minor", "currency", "merchant_id" }` | Reconciliation source |
 

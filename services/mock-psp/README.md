@@ -22,3 +22,31 @@
    - `GET /.well-known/psp-keys.json`: RFC 7517 JWK Set containing Mock PSP public key.
 5. **Fault Injection**:
    - `POST /psp/v1/admin/faults`: Configures test faults (`TIMEOUT_AFTER_SUCCESS`, `DECLINE`, `DUPLICATE_WEBHOOK`, `FORGED_CALLBACK`). Protected by admin key and restricted to `test` and `demo` profiles.
+
+## Database Schema & Migrations
+
+The Mock PSP simulator maintains its own independent schema (`PspBase.metadata.create_all()`).
+
+### Scoped Credential Token Uniqueness
+To prevent duplicate credential provisioning against the same Mandit Core token under concurrent requests, `psp_scoped_credentials.token_id` carries a unique constraint (`unique=True`).
+
+When running against a persistent database (e.g. PostgreSQL or a persistent container volume) migrated from an earlier simulator schema, run the following idempotent migration DDL if the constraint is not present:
+```sql
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_psp_scoped_credentials_token_id
+ON psp_scoped_credentials (token_id);
+```
+Alternatively, in development or ephemeral test environments, recreating the simulator database container automatically provisions the unique index.
+
+### Concurrency and Single-Use Guarantees
+Card authorization (`POST /psp/v1/card/authorize`) enforces single-use consumption atomically via an SQL Compare-And-Set (CAS) update:
+```sql
+UPDATE psp_scoped_credentials
+SET status = 'CONSUMED'
+WHERE credential_id = :credential_id
+  AND status = 'ACTIVE'
+  AND expires_at > :now
+  AND merchant_id = :merchant_id
+  AND currency = :currency
+  AND max_amount_minor >= :amount_minor;
+```
+If two concurrent requests attempt to authorize using the same scoped credential, exactly one succeeds; the losing request receives `CREDENTIAL_INACTIVE` without creating a duplicate payment.

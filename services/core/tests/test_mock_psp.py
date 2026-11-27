@@ -26,6 +26,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -38,7 +39,7 @@ from mock_psp.api import get_psp_db_session, get_psp_service, router
 from mock_psp.config import SETTINGS
 from mock_psp.crypto import PspKeyManager
 from mock_psp.faults import FaultManager
-from mock_psp.models import PspBase
+from mock_psp.models import PspBase, PspScopedCredentialModel
 from mock_psp.schemas import (
     AuthorizeCardRequest,
     CaptureCardRequest,
@@ -773,3 +774,108 @@ def test_http_upi_approve_alias_api(test_setup):
     )
     assert a_resp.status_code == 200
     assert a_resp.json()["status"] == "SUCCESS"
+
+
+def test_concurrent_card_authorization_prevents_double_spend(test_setup):
+    """Test that concurrent card authorizations on the same credential allow only one success."""
+
+    async def _run() -> None:
+        service: MockPspService = test_setup["service"]
+        db: AsyncSessionWrapper = test_setup["db"]
+        token = make_test_token(token_id="ptok_concurrent_cas", amount_minor=500000)
+        now = datetime.now(UTC)
+
+        cred = await service.create_scoped_credential(
+            CreateScopedCredentialRequest(
+                mandit_token=token,
+                merchant_id="mer_croma",
+                max_amount_minor=500000,
+                currency="INR",
+                expires_at=now + timedelta(minutes=10),
+            ),
+            db,
+        )
+        assert cred.status == "ACTIVE"
+
+        # Concurrently issue 5 authorizations with distinct idempotency keys
+        tasks = [
+            service.authorize_card(
+                AuthorizeCardRequest(
+                    credential_id=cred.credential_id,
+                    merchant_id="mer_croma",
+                    amount_minor=500000,
+                    currency="INR",
+                    idempotency_key=f"idem_concurrent_card_{i}",
+                ),
+                db,
+            )
+            for i in range(5)
+        ]
+        results = await asyncio.gather(*tasks)
+
+        authorized = [r for r in results if r.status == "AUTHORIZED"]
+        declined = [r for r in results if r.status == "FAILED"]
+
+        assert len(authorized) == 1
+        assert authorized[0].decline_code is None
+        assert authorized[0].psp_payment_id.startswith("psp_")
+
+        assert len(declined) == 4
+        for d in declined:
+            assert d.decline_code == "CREDENTIAL_INACTIVE"
+
+    asyncio.run(_run())
+
+
+def test_scoped_credential_unique_token_id_constraint(test_setup):
+    """Test that psp_scoped_credentials enforces unique token_id at the DB level."""
+
+    async def _run() -> None:
+        service: MockPspService = test_setup["service"]
+        db: AsyncSessionWrapper = test_setup["db"]
+        token = make_test_token(token_id="ptok_unique_token_check", amount_minor=500000)
+        now = datetime.now(UTC)
+
+        # 1. First creation succeeds
+        cred1 = await service.create_scoped_credential(
+            CreateScopedCredentialRequest(
+                mandit_token=token,
+                merchant_id="mer_croma",
+                max_amount_minor=500000,
+                currency="INR",
+                expires_at=now + timedelta(minutes=10),
+            ),
+            db,
+        )
+        assert cred1.status == "ACTIVE"
+
+        # 2. Repeated call returns the same credential idempotently
+        cred2 = await service.create_scoped_credential(
+            CreateScopedCredentialRequest(
+                mandit_token=token,
+                merchant_id="mer_croma",
+                max_amount_minor=500000,
+                currency="INR",
+                expires_at=now + timedelta(minutes=10),
+            ),
+            db,
+        )
+        assert cred2.credential_id == cred1.credential_id
+
+        # 3. Direct insertion of duplicate token_id triggers IntegrityError
+        duplicate_cred = PspScopedCredentialModel(
+            credential_id="spc_duplicate_manual",
+            token_id="ptok_unique_token_check",
+            merchant_id="mer_croma",
+            max_amount_minor=500000,
+            currency="INR",
+            status="ACTIVE",
+            expires_at=now + timedelta(minutes=10),
+            created_at=now,
+        )
+        db.add(duplicate_cred)
+        with pytest.raises(IntegrityError):
+            await db.flush()
+        await db.rollback()
+
+    asyncio.run(_run())

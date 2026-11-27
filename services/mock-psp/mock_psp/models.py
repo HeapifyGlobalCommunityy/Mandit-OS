@@ -34,7 +34,7 @@ class PspScopedCredentialModel(PspBase):
     __tablename__ = "psp_scoped_credentials"
 
     credential_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    token_id: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    token_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
     merchant_id: Mapped[str] = mapped_column(Text, nullable=False)
     max_amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)

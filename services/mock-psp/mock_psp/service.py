@@ -7,7 +7,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from mandit.tokens.schemas import TokenRedeemRequest
 from mock_psp.config import SETTINGS
@@ -170,7 +171,27 @@ class MockPspService:
 
         if session is not None:
             session.add(cred_model)
-            await self._flush(session)
+            try:
+                await self._flush(session)
+            except IntegrityError as exc:
+                sel_stmt = select(PspScopedCredentialModel).where(
+                    PspScopedCredentialModel.token_id == token_id
+                )
+                res = await session.execute(sel_stmt)
+                existing = res.scalar_one_or_none()
+                if existing is not None:
+                    return CreateScopedCredentialResponse(
+                        credential_id=existing.credential_id,
+                        status=existing.status,
+                        max_amount_minor=existing.max_amount_minor,
+                        currency=existing.currency,
+                        expires_at=ensure_tz(existing.expires_at) or existing.expires_at,
+                    )
+                raise PspServiceError(
+                    "TOKEN_ALREADY_REDEEMED",
+                    f"Credential already created for token {token_id}",
+                    409,
+                ) from exc
 
         return CreateScopedCredentialResponse(
             credential_id=credential_id,
@@ -202,60 +223,92 @@ class MockPspService:
                     decline_code=existing_payment.decline_code,
                 )
 
-        # 2. Credential lookup
+        # 2. Credential validation & atomic single-use consumption
         if session is None:
             raise PspServiceError("DB_REQUIRED", "Session required", 500)
 
-        c_stmt = select(PspScopedCredentialModel).where(
-            PspScopedCredentialModel.credential_id == req.credential_id
-        )
-        c_res = await session.execute(c_stmt)
-        cred = c_res.scalar_one_or_none()
-
-        if cred is None:
-            raise PspServiceError("INVALID_CREDENTIAL", "Credential not found", 404)
-
         now = datetime.now(UTC)
-        exp = ensure_tz(cred.expires_at)
-        if cred.status != "ACTIVE":
+
+        # Atomic Compare-And-Set (CAS) update:
+        # Only transitions status ACTIVE -> CONSUMED if unexpired, merchant matches,
+        # currency matches, and amount does not exceed max_amount_minor.
+        # This prevents concurrent double-spending at the database transaction level.
+        cas_stmt = (
+            update(PspScopedCredentialModel)
+            .where(
+                PspScopedCredentialModel.credential_id == req.credential_id,
+                PspScopedCredentialModel.status == "ACTIVE",
+                PspScopedCredentialModel.expires_at > now,
+                PspScopedCredentialModel.merchant_id == req.merchant_id,
+                PspScopedCredentialModel.currency == req.currency,
+                PspScopedCredentialModel.max_amount_minor >= req.amount_minor,
+            )
+            .values(status="CONSUMED")
+            .execution_options(synchronize_session="fetch")
+        )
+        cas_res = await session.execute(cas_stmt)
+
+        if cas_res.rowcount == 0:
+            # CAS failed: credential was either not found, already consumed, expired,
+            # or failed one of the constraint checks. Run read-only query to diagnose.
+            c_stmt = select(PspScopedCredentialModel).where(
+                PspScopedCredentialModel.credential_id == req.credential_id
+            )
+            c_res = await session.execute(c_stmt)
+            cred = c_res.scalar_one_or_none()
+
+            if cred is None:
+                raise PspServiceError("INVALID_CREDENTIAL", "Credential not found", 404)
+
+            exp = ensure_tz(cred.expires_at)
+            if cred.status != "ACTIVE":
+                return AuthorizeCardResponse(
+                    psp_payment_id="",
+                    status="FAILED",
+                    amount_minor=req.amount_minor,
+                    currency=req.currency,
+                    decline_code="CREDENTIAL_INACTIVE",
+                )
+            if exp is not None and exp <= now:
+                return AuthorizeCardResponse(
+                    psp_payment_id="",
+                    status="FAILED",
+                    amount_minor=req.amount_minor,
+                    currency=req.currency,
+                    decline_code="CREDENTIAL_EXPIRED",
+                )
+            if cred.merchant_id != req.merchant_id:
+                return AuthorizeCardResponse(
+                    psp_payment_id="",
+                    status="FAILED",
+                    amount_minor=req.amount_minor,
+                    currency=req.currency,
+                    decline_code="MERCHANT_MISMATCH",
+                )
+            if cred.currency != req.currency:
+                return AuthorizeCardResponse(
+                    psp_payment_id="",
+                    status="FAILED",
+                    amount_minor=req.amount_minor,
+                    currency=req.currency,
+                    decline_code="CURRENCY_MISMATCH",
+                )
+            if req.amount_minor > cred.max_amount_minor:
+                return AuthorizeCardResponse(
+                    psp_payment_id="",
+                    status="FAILED",
+                    amount_minor=req.amount_minor,
+                    currency=req.currency,
+                    decline_code="AMOUNT_EXCEEDS_LIMIT",
+                )
+
+            # Fallback if state changed between update and select
             return AuthorizeCardResponse(
                 psp_payment_id="",
                 status="FAILED",
                 amount_minor=req.amount_minor,
                 currency=req.currency,
                 decline_code="CREDENTIAL_INACTIVE",
-            )
-        if exp is not None and exp <= now:
-            return AuthorizeCardResponse(
-                psp_payment_id="",
-                status="FAILED",
-                amount_minor=req.amount_minor,
-                currency=req.currency,
-                decline_code="CREDENTIAL_EXPIRED",
-            )
-        if cred.merchant_id != req.merchant_id:
-            return AuthorizeCardResponse(
-                psp_payment_id="",
-                status="FAILED",
-                amount_minor=req.amount_minor,
-                currency=req.currency,
-                decline_code="MERCHANT_MISMATCH",
-            )
-        if cred.currency != req.currency:
-            return AuthorizeCardResponse(
-                psp_payment_id="",
-                status="FAILED",
-                amount_minor=req.amount_minor,
-                currency=req.currency,
-                decline_code="CURRENCY_MISMATCH",
-            )
-        if req.amount_minor > cred.max_amount_minor:
-            return AuthorizeCardResponse(
-                psp_payment_id="",
-                status="FAILED",
-                amount_minor=req.amount_minor,
-                currency=req.currency,
-                decline_code="AMOUNT_EXCEEDS_LIMIT",
             )
 
         # 3. Check fault injection
@@ -286,8 +339,7 @@ class MockPspService:
                 decline_code=code,
             )
 
-        # 4. Successful authorization: consume single-use credential
-        cred.status = "CONSUMED"
+        # 4. Successful authorization: single-use credential was atomically consumed
         psp_payment_id = f"psp_{uuid.uuid4().hex}"
         payment = PspPaymentModel(
             psp_payment_id=psp_payment_id,
