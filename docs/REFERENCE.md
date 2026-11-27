@@ -1187,6 +1187,7 @@ Status values: `Planned`, `Implemented`, `Tested` (corpus passing in CI), `Phase
 |---|---|---|
 | 2026-11-23 | Initial threat model derived from the brief, the PRD and the Deep Dive review | Documentation baseline |
 | 2026-11-25 | T2: credential-layer controls implemented (pinned EdDSA KYA JWT verification, `cnf.jkt` key binding, small-order Ed25519 key rejection) with corpus cases `impersonation/ATK-IMP-001` to `006`. RFC 9421 request signatures, nonce replay and revocation remain Planned, so T2 status stays Planned. | Team 1 |
+| 2026-11-27 | T2: operator verification gate and one-key-one-agent uniqueness at agent registration, with corpus cases `impersonation/ATK-IMP-007` and `008`. T2 status stays Planned. | Team 1 |
 
 ---
 

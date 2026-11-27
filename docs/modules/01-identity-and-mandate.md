@@ -282,7 +282,15 @@ Response `201`:
 }
 ```
 
-`POST /v1/operators/{operator_id}/verify` (Mandit admin) returns `200 {"operator_id": "...", "status": "VERIFIED", "verified_at": "..."}` and emits `OPERATOR_VERIFIED`.
+`POST /v1/operators/{operator_id}/verify` (Mandit admin) returns `200 {"operator_id": "...", "status": "VERIFIED", "verified_at": "..."}` and emits `OPERATOR_VERIFIED`. Verifying an operator that is already `VERIFIED` returns the same body and emits no second event. A `SUSPENDED` operator is not revived: `409 CONFLICT`.
+
+`GET /v1/operators/{operator_id}` returns `operator_id`, `legal_name`, `domain`, `contact_email`, `status`, `created_at` and, once verified, `verified_at`.
+
+Errors: `VALIDATION_ERROR` (400), `UNAUTHENTICATED` (401), `FORBIDDEN` (403, registration and verification by anyone but a Mandit admin), `NOT_FOUND` (404), `CONFLICT` (409).
+
+Event: `OPERATOR_REGISTERED`. The ledger payload carries `legal_name` and `domain` only; the contact email is personal data and stays out of the ledger.
+
+Phase 1 validation: `domain` and the domain of `contact_email` must be reserved synthetic names (RFC 2606 and RFC 6761: `*.example`, `*.test`, `*.invalid`, `*.localhost`, `example.com`, `example.net`, `example.org`), because the programme uses synthetic data only and verification is manual. Domains are stored in lowercase.
 
 ### 6.2 `POST /v1/agents/register`
 
@@ -314,9 +322,19 @@ Response `201`:
 }
 ```
 
-Errors: `OPERATOR_NOT_VERIFIED` (403), `VALIDATION_ERROR` (400, for example a non-Ed25519 key), `SCOPE_DENIED` (403, a requested scope not grantable to the operator).
+Errors: `OPERATOR_NOT_VERIFIED` (403), `VALIDATION_ERROR` (400, for example a non-Ed25519 key), `SCOPE_DENIED` (403, a requested scope not grantable to the operator), `CONFLICT` (409, the public key is already registered to an agent), `NOT_FOUND` (404, the operator does not exist or the caller does not act for it).
 
 Event: `AGENT_REGISTERED`.
+
+Rules:
+
+1. The caller must be a Mandit admin or an admin of `operator_id`. Any other caller gets `NOT_FOUND`, the same as for a missing operator, so operator identifiers cannot be enumerated.
+2. Grantable scopes in Phase 1 are the tool scopes of [REFERENCE §10](../REFERENCE.md#10-mcp-tool-surface) except `user:ask` (a Phase 2 tool). Any other requested scope fails the whole request with `SCOPE_DENIED`; scopes are never silently dropped. Granted scopes are deduplicated and sorted.
+3. A public key (by RFC 7638 thumbprint) identifies exactly one agent. Registering it again, even with a different `kid` label, returns `CONFLICT`. The `UNIQUE` constraint on `agent_keys.thumbprint` enforces this.
+4. Only the public members `{kty, crv, x}` are stored. A JWK containing `d` is rejected.
+5. Request bodies are JSON objects of at most 16 KiB with `Content-Type: application/json`. Unknown fields, repeated members and non-finite numbers are rejected with `VALIDATION_ERROR`; error details name the field but do not echo the value.
+
+`GET /v1/agents/{agent_id}` (USER who acts for the operator, Mandit admin, or SERVICE) returns `agent_id`, `operator_id`, `name`, `version`, `model_declared`, `scopes`, `status`, `created_at`, `revoked_at`, `directory_url` and `keys` (`key_id`, `key_thumbprint`, `status`, `created_at` each). Public key material is served by the directory (§6.6), not here.
 
 ### 6.3 `POST /v1/agents/{agent_id}/challenge`
 
