@@ -22,6 +22,7 @@ from mandit.payments.interface import (
     MandateClient,
     PaymentOrchestrator,
     PspClient,
+    TokenClient,
 )
 from mandit.payments.models import (
     IdempotencyKeyModel,
@@ -53,7 +54,6 @@ from mandit.payments.webhook_verifier import (
     WebhookSignatureError,
     get_webhook_verifier,
 )
-from mandit.tokens.interface import TokenService
 from mandit.tokens.models import PaymentTokenModel
 from mandit.tokens.service import TokenError, TokenIssueError
 
@@ -126,7 +126,7 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
     def __init__(
         self,
         decision_provider: DecisionProvider,
-        token_service: TokenService,
+        token_service: TokenClient,
         mandate_client: MandateClient,
         grounding_client: GroundingClient,
         psp_client: PspClient,

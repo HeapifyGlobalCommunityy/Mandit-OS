@@ -901,7 +901,7 @@ class TokenServiceImpl:
     async def mark_redeemed(
         self,
         token_id: str,
-        session: Any,
+        session: Any = None,
     ) -> None:
         """Mark token as fully REDEEMED following PSP successful capture."""
         now = datetime.now(UTC)
@@ -910,13 +910,14 @@ class TokenServiceImpl:
             .where(PaymentTokenModel.token_id == token_id)
             .values(status=TokenStatus.REDEEMED.value, redeemed_at=now)
         )
-        await session.execute(stmt)
-        await self._flush(session)
+        if session is not None and hasattr(session, "execute"):
+            await session.execute(stmt)
+            await self._flush(session)
 
     async def mark_failed(
         self,
         token_id: str,
-        session: Any,
+        session: Any = None,
     ) -> None:
         """Mark token as FAILED following PSP terminal decline."""
         stmt = (
@@ -924,8 +925,24 @@ class TokenServiceImpl:
             .where(PaymentTokenModel.token_id == token_id)
             .values(status=TokenStatus.FAILED.value)
         )
-        await session.execute(stmt)
-        await self._flush(session)
+        if session is not None and hasattr(session, "execute"):
+            await session.execute(stmt)
+            await self._flush(session)
+
+    async def mark_unknown(
+        self,
+        token_id: str,
+        session: Any = None,
+    ) -> None:
+        """Mark token as UNKNOWN following PSP gateway timeout."""
+        stmt = (
+            update(PaymentTokenModel)
+            .where(PaymentTokenModel.token_id == token_id)
+            .values(status=TokenStatus.UNKNOWN.value)
+        )
+        if session is not None and hasattr(session, "execute"):
+            await session.execute(stmt)
+            await self._flush(session)
 
     async def _emit_rejection(
         self,

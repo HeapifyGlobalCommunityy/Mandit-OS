@@ -3,7 +3,7 @@
 Maintains strict modular monolith boundaries per docs/REFERENCE.md §6, §7, and §14.
 """
 
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from mandit.payments.schemas import (
     PaymentExecuteResponse,
@@ -51,6 +51,36 @@ class GroundingClient(Protocol):
         psp_payment_id: str,
         session: Any = None,
     ) -> Any: ...
+
+
+@runtime_checkable
+class TokenClient(Protocol):
+    """Protocol for token issuance and lifecycle transitions required by Payment Orchestrator."""
+
+    async def issue(
+        self,
+        decision_id: str,
+        reservation_id: str,
+        session: Any = None,
+    ) -> Any: ...
+
+    async def mark_redeemed(
+        self,
+        token_id: str,
+        session: Any = None,
+    ) -> None: ...
+
+    async def mark_failed(
+        self,
+        token_id: str,
+        session: Any = None,
+    ) -> None: ...
+
+    async def mark_unknown(
+        self,
+        token_id: str,
+        session: Any = None,
+    ) -> None: ...
 
 
 class PspClient(Protocol):

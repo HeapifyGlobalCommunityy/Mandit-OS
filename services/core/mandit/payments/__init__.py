@@ -16,6 +16,7 @@ from mandit.payments.interface import (
     MandateClient,
     PaymentOrchestrator,
     PspClient,
+    TokenClient,
 )
 from mandit.payments.models import (
     IdempotencyKeyModel,
@@ -110,6 +111,7 @@ __all__ = [
     "GroundingClient",
     "DecisionProvider",
     "PspClient",
+    "TokenClient",
     # PSP Clients & Errors
     "HttpPspClient",
     "InProcessPspClient",
