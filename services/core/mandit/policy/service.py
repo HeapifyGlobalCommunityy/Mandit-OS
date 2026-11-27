@@ -460,8 +460,11 @@ class DecisionServiceImpl:
     ) -> Decision:
         """Run policy evaluation with already constructed FrozenDecisionInputs."""
         if session is None and self.session_factory is not None:
-            return await self._execute_in_managed_session(
-                lambda sess: self._evaluate_with_inputs_and_session(inputs, sess)
+            return cast(
+                Decision,
+                await self._execute_in_managed_session(
+                    lambda sess: self._evaluate_with_inputs_and_session(inputs, sess)
+                ),
             )
         if session is None:
             raise ValueError(
@@ -771,8 +774,11 @@ class DecisionServiceImpl:
     async def evaluate(self, proposal_id: str, session: Any = None) -> Decision:
         """Gather inputs and run policy evaluation for the proposal."""
         if session is None and self.session_factory is not None:
-            return await self._execute_in_managed_session(
-                lambda sess: self._evaluate_with_session(proposal_id, sess)
+            return cast(
+                Decision,
+                await self._execute_in_managed_session(
+                    lambda sess: self._evaluate_with_session(proposal_id, sess)
+                ),
             )
         if session is None:
             raise ValueError(
