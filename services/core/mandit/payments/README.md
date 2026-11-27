@@ -68,3 +68,21 @@ Mapping directly to migration `services/core/migrations/versions/0004_policy_and
 - `payments`: Authoritative persistent payment records.
 - `psp_webhook_events`: Replay prevention store for processed PSP webhook event IDs (`psp_event_id`).
 - `idempotency_keys`: Idempotent execution cache mapping `(key, route, request_hash)` to stored responses.
+
+---
+
+## 6. PSP Adapters & Webhook Verification (Milestone 2)
+
+### PSP Client Adapters
+- `HttpPspClient`: Communicates with standalone Mock PSP (`http://mock-psp:8200`) via HTTP POST/GET.
+  - Configures explicit request (`timeout=10.0s`) and connection (`connect_timeout=5.0s`) timeouts.
+  - Fail-closed error handling: raises `PspTimeoutError` on timeout, `PspConnectionError` on network errors, and `PspResponseError` on non-success HTTP status codes.
+  - **No Automatic Retries:** In accordance with the contract, timeouts or network errors on state-changing payment requests are strictly never retried automatically, preventing duplicate charges.
+- `InProcessPspClient`: Deterministic adapter directly calling `MockPspService` in-memory for unit and integration testing without network overhead.
+
+### Webhook Signature Verifier (`PspWebhookVerifier`)
+- **Header:** `Mock-PSP-Signature: keyid="<key_id>",sig="<b64url ed25519 over JCS(body)>"`
+- **Canonicalization:** RFC 8785 JSON Canonicalization Scheme (JCS). Ordinary `json.dumps()` is strictly prohibited.
+- **Key Separation:** Dedicated Ed25519 public keys registered specifically for webhook verification (`register_trusted_key(key_id, public_key)`), kept strictly separate from service-to-service authentication keys.
+- **Fail-Closed Behavior:** Fails closed (401) on missing headers, malformed signatures, unknown key IDs, signature mismatches, or malformed JSON.
+- **Non-Authority:** Webhook delivery is never treated as authoritative proof of payment success; Core status confirmation via `GET /psp/v1/payments/{psp_payment_id}` is mandatory before any state mutation.
