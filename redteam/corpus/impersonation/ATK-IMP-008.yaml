@@ -1,0 +1,20 @@
+# An attacker registers a victim agent's public key (published in the agent directory) under
+# the attacker's own agent. If two agents shared a key, a request signed by the victim could be
+# attributed to the attacker's agent, or the reverse; a key must identify exactly one agent.
+id: ATK-IMP-008
+title: Registering another agent's public key under a second agent
+threat_class: T2_AGENT_IMPERSONATION     # REFERENCE Appendix C
+family: key_reuse
+severity: MEDIUM
+version: 1
+mode: scripted
+credential_attack: duplicate_key_registration   # replayed by services/core/tests/identity
+steps:
+  - endpoint: POST /v1/agents/register   # attacker operator, victim's JWK (with a new kid label)
+    expect_status: 409
+expected:
+  outcome_in: [DENIED]
+  token_issued: false
+  payment_executed: false
+  reason_codes_include_any: [CONFLICT]
+controls_under_test: [agent_key_uniqueness]

@@ -1,9 +1,10 @@
-"""Replays the T2 impersonation corpus cases against the identity crypto core.
+"""Replays the T2 impersonation corpus cases against the identity module.
 
 Each case in redteam/corpus/impersonation/ names a `credential_attack`. This module builds that
-attack against the real issuer, verifier and key-validation code and asserts that it is rejected
-with one of the case's expected reason codes. The gateway-level steps in the same files run once
-the gateway and the red-team harness exist; this test is the regression gate until then.
+attack against the real issuer, verifier, key-validation and registration code and asserts that
+it is rejected with one of the case's expected reason codes. The gateway-level steps in the same
+files run once the gateway and the red-team harness exist; this test is the regression gate until
+then.
 """
 
 import json
@@ -15,10 +16,19 @@ import pytest
 import yaml
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from identity_support import (
+    ADMIN,
+    MemoryDatabase,
+    MemoryUnitOfWork,
+    agent_request,
+    operator_admin,
+    run,
+)
 
 from mandit.identity.keys import base64url, jwk_thumbprint, public_key_from_jwk
 from mandit.identity.kya_jwt import issue_kya_jwt, verify_kya_jwt
-from mandit.identity.schemas import IdentityError
+from mandit.identity.schemas import AgentRegistration, IdentityError, OperatorRegistration
+from mandit.identity.service import RegistrationService
 
 CORPUS = Path(__file__).resolve().parents[4] / "redteam" / "corpus" / "impersonation"
 CASES = sorted(CORPUS.glob("ATK-IMP-*.yaml"))
@@ -101,6 +111,52 @@ def small_order_public_key() -> None:
     public_key_from_jwk({"kty": "OKP", "crv": "Ed25519", "x": base64url(identity_point)})
 
 
+def _registry() -> RegistrationService:
+    db = MemoryDatabase()
+    return RegistrationService(lambda: MemoryUnitOfWork(db))
+
+
+async def _operator(service: RegistrationService, *, verify: bool) -> str:
+    request = OperatorRegistration.model_validate(
+        {"legal_name": "Mallory Ltd (synthetic)", "domain": "mallory.example",
+         "contact_email": "ops@mallory.example"}
+    )  # fmt: skip
+    operator = await service.register_operator(ADMIN, request)
+    if verify:
+        await service.verify_operator(ADMIN, operator.operator_id)
+    return operator.operator_id
+
+
+def unverified_operator_registration() -> None:
+    async def attack() -> None:
+        service = _registry()
+        operator_id = await _operator(service, verify=False)
+        request = AgentRegistration.model_validate(agent_request(operator_id))
+        await service.register_agent(operator_admin(operator_id), request)
+
+    run(attack())
+
+
+def duplicate_key_registration() -> None:
+    async def attack() -> None:
+        service = _registry()
+        victim_operator = await _operator(service, verify=True)
+        victim_jwk = _jwk(VICTIM_KEY)
+        victim = AgentRegistration.model_validate(
+            agent_request(victim_operator, public_key=victim_jwk)
+        )
+        await service.register_agent(operator_admin(victim_operator), victim)
+
+        attacker_operator = await _operator(service, verify=True)
+        stolen = {**victim_jwk, "kid": "mallory-key-1"}  # a new label does not make a new key
+        attacker = AgentRegistration.model_validate(
+            agent_request(attacker_operator, name="mallory-shopper", public_key=stolen)
+        )
+        await service.register_agent(operator_admin(attacker_operator), attacker)
+
+    run(attack())
+
+
 ATTACKS: dict[str, Callable[[], None]] = {
     fn.__name__: fn
     for fn in (
@@ -110,6 +166,8 @@ ATTACKS: dict[str, Callable[[], None]] = {
         forged_signature,
         stolen_jwt_wrong_key,
         small_order_public_key,
+        unverified_operator_registration,
+        duplicate_key_registration,
     )
 }
 
