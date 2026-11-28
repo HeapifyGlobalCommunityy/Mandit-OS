@@ -23,11 +23,20 @@ from mandit.policy.schemas import (
     DecisionResult,
     EvaluationStage,
     FrozenDecisionInputs,
+    RiskSummary,
     RuleHit,
     to_snapshot_dict,
 )
 
 DEFAULT_POLICY_VERSION = "policy-1.0.0"
+
+
+def _required_str(obj: Any, name: str) -> str:
+    """Return a non-empty string attribute or refuse (no default identifiers)."""
+    value = getattr(obj, name, None)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Proposal is missing required field '{name}'")
+    return value
 
 
 def decide(
@@ -236,8 +245,10 @@ def build_display_payload(
 
     # 1. Tax and Fees: Must come from calculation data and remain strictly separate.
     # Never report fees as tax or calculate tax as a bulk difference.
-    tax_minor = getattr(calc, "tax_minor", 0)
-    fees_minor = getattr(calc, "fees_minor", 0)
+    tax_raw = getattr(calc, "tax_minor", None)
+    fees_raw = getattr(calc, "fees_minor", None)
+    tax_minor: Any = tax_raw if isinstance(tax_raw, int) else "unknown"
+    fees_minor: Any = fees_raw if isinstance(fees_raw, int) else "unknown"
 
     # 2. Merchant Legal Name: Must not use merchant_domain. Use verified legal_name or "unknown".
     legal_name = (
@@ -814,10 +825,13 @@ class DecisionServiceImpl:
         else:
             raise ValueError("GroundingService must provide latest_verification or verify")
 
-        proposal_hash = getattr(prop_data, "proposal_hash", verification.checkout.checkout_hash)
-        transaction_id = getattr(prop_data, "transaction_id", f"txn_{proposal_id}")
-        mandate_id = getattr(prop_data, "mandate_id", "man_default")
-        agent_id = getattr(prop_data, "agent_id", "agent_default")
+        # Fail closed: the proposal's own identifiers are never guessed or defaulted.
+        if prop_data is None:
+            raise ValueError(f"Proposal '{proposal_id}' not found in GroundingService")
+        proposal_hash = _required_str(prop_data, "proposal_hash")
+        transaction_id = _required_str(prop_data, "transaction_id")
+        mandate_id = _required_str(prop_data, "mandate_id")
+        agent_id = _required_str(prop_data, "agent_id")
         merchant_id = verification.checkout.merchant_id
         merchant_domain = verification.checkout.merchant_domain
 
@@ -865,12 +879,13 @@ class DecisionServiceImpl:
                     operator_id = getattr(agent, "operator_id", None)
                     if hasattr(self.identity_service, "get_operator") and operator_id:
                         op = await self.identity_service.get_operator(operator_id)
-                        op_verified_at = getattr(op, "verified_at", None)
-                        operator_verified = (
-                            getattr(op, "status", None) == "VERIFIED"
-                            or (op_verified_at is not None and op_verified_at <= evaluated_at)
-                            or getattr(op, "verified", None) is True
-                        )
+                        # A status, when present, is authoritative: a SUSPENDED operator keeps
+                        # its verified_at timestamp but is no longer verified.
+                        op_status = getattr(op, "status", None)
+                        if op_status is not None:
+                            operator_verified = op_status == "VERIFIED"
+                        else:
+                            operator_verified = getattr(op, "verified", None) is True
                     elif agent is not None and hasattr(agent, "operator_verified"):
                         operator_verified = getattr(agent, "operator_verified", None) is True
                     else:
@@ -1009,6 +1024,8 @@ class DecisionServiceImpl:
                 risk = await self.safety_service.get(merchant_domain)
         else:
             raise ValueError("SafetyService is required")
+        if not isinstance(risk, RiskSummary) or not (0.0 <= risk.site_risk_score <= 1.0):
+            raise ValueError("SafetyService returned an invalid risk summary")
 
         user_history = 0
         if self.user_history_service is not None:

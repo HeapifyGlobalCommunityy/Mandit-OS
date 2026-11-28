@@ -1332,3 +1332,163 @@ def test_build_inputs_accepts_valid_boolean_true(db_session, signer, base_inputs
         assert decision.outcome == DecisionOutcome.ALLOW
 
     asyncio.run(_run())
+
+
+# --- Regression: integration with the published identity and safety types ---
+
+
+def _service_with(signer, base_inputs, identity_service, proposal=None, risk=None):
+    grounding_mock = AsyncMock()
+    grounding_mock.get_proposal.return_value = (
+        proposal
+        if proposal is not None
+        else MockProposal(
+            base_inputs.proposal_id,
+            base_inputs.proposal_hash,
+            mandate_id=base_inputs.mandate.mandate_id,
+        )
+    )
+    grounding_mock.latest_verification.return_value = base_inputs.verification
+    mandate_mock = AsyncMock()
+    mandate_mock.get.return_value = base_inputs.mandate
+    safety_mock = AsyncMock()
+    safety_mock.get_risk_summary.return_value = risk if risk is not None else base_inputs.risk
+    history_mock = AsyncMock()
+    history_mock.get_user_merchant_history.return_value = 3
+    return DecisionServiceImpl(
+        signer=signer,
+        grounding_service=grounding_mock,
+        identity_service=identity_service,
+        mandate_service=mandate_mock,
+        safety_service=safety_mock,
+        user_history_service=history_mock,
+    )
+
+
+class _IdentityModuleService:
+    """Returns the identity module's own AgentContext and OperatorRecord-shaped values."""
+
+    def __init__(self, thumbprint: str, operator_status: str) -> None:
+        self.thumbprint = thumbprint
+        self.operator_status = operator_status
+
+    async def get_agent(self, agent_id: str):
+        from mandit.identity.schemas import AgentContext as IdentityAgentContext
+
+        return IdentityAgentContext(
+            agent_id=agent_id,
+            operator_id="op_acme",
+            key_id="key_01",
+            key_thumbprint=self.thumbprint,
+            scopes=frozenset({"purchase:propose"}),
+            credential_id="cred_01",
+            verified_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+
+    async def is_active(self, agent_id: str, key_id: str | None = None) -> bool:
+        return True
+
+    async def get_operator(self, operator_id: str):
+        status = self.operator_status
+
+        class Operator:
+            pass
+
+        op = Operator()
+        op.status = status
+        op.verified_at = datetime.now(UTC) - timedelta(days=30)
+        return op
+
+
+def test_identity_module_agent_context_is_accepted(db_session, signer, base_inputs):
+    """The identity module's AgentContext (not a policy copy) yields a valid KYA check."""
+    svc = _service_with(
+        signer,
+        base_inputs,
+        _IdentityModuleService(base_inputs.mandate.agent_key_thumbprint, "VERIFIED"),
+    )
+    decision = asyncio.run(svc.evaluate(base_inputs.proposal_id, session=db_session))
+    assert decision.outcome == DecisionOutcome.ALLOW
+
+
+def test_suspended_operator_with_verified_at_is_blocked(db_session, signer, base_inputs):
+    """A SUSPENDED operator keeps verified_at but must not count as verified."""
+    svc = _service_with(
+        signer,
+        base_inputs,
+        _IdentityModuleService(base_inputs.mandate.agent_key_thumbprint, "SUSPENDED"),
+    )
+    decision = asyncio.run(svc.evaluate(base_inputs.proposal_id, session=db_session))
+    assert decision.outcome == DecisionOutcome.BLOCK
+    assert decision.stage == EvaluationStage.HARD_GATE
+    assert any(r.code == "OPERATOR_NOT_VERIFIED" for r in decision.rules_fired)
+
+
+@pytest.mark.parametrize("missing", ["agent_id", "mandate_id", "proposal_hash", "transaction_id"])
+def test_build_inputs_refuses_proposal_without_identifiers(
+    db_session, signer, base_inputs, missing
+):
+    """Missing proposal identifiers are never replaced by defaults."""
+    proposal = MockProposal(
+        base_inputs.proposal_id,
+        base_inputs.proposal_hash,
+        mandate_id=base_inputs.mandate.mandate_id,
+    )
+    delattr(proposal, missing)
+    svc = _service_with(
+        signer,
+        base_inputs,
+        _IdentityModuleService(base_inputs.mandate.agent_key_thumbprint, "VERIFIED"),
+        proposal=proposal,
+    )
+    with pytest.raises(ValueError, match=missing):
+        asyncio.run(svc.build_inputs(base_inputs.proposal_id, session=db_session))
+
+
+def test_build_inputs_refuses_invalid_risk_summary(db_session, signer, base_inputs):
+    """A risk summary that is not the safety module's type, or out of range, is refused."""
+    bad_risk = dataclasses.replace(base_inputs.risk, site_risk_score=1.5)
+    svc = _service_with(
+        signer,
+        base_inputs,
+        _IdentityModuleService(base_inputs.mandate.agent_key_thumbprint, "VERIFIED"),
+        risk=bad_risk,
+    )
+    with pytest.raises(ValueError, match="risk summary"):
+        asyncio.run(svc.build_inputs(base_inputs.proposal_id, session=db_session))
+
+
+def test_snapshot_records_safety_signals_as_reported(base_inputs):
+    """Signals keep the safety module's fields; nothing is invented (no default severity)."""
+    from mandit.safety.interface import RiskSignal
+
+    signal = RiskSignal(
+        code="DOMAIN_LOOKALIKE", weight=0.35, detail="close to shop.example", source="domain_scan"
+    )
+    inputs = dataclasses.replace(
+        base_inputs, risk=dataclasses.replace(base_inputs.risk, signals=(signal,))
+    )
+    assert to_snapshot_dict(inputs)["risk"]["signals"] == [
+        {
+            "code": "DOMAIN_LOOKALIKE",
+            "weight": 0.35,
+            "detail": "close to shop.example",
+            "source": "domain_scan",
+        }
+    ]
+
+
+def test_build_display_payload_unreported_fees_and_tax_are_unknown(base_inputs):
+    """Fees and tax that Team 3 did not report are shown as "unknown", not 0."""
+    from mandit.policy.service import build_display_payload
+
+    calc = dataclasses.replace(
+        base_inputs.verification.calculation, fees_minor=None, tax_minor=None
+    )
+    inputs = dataclasses.replace(
+        base_inputs,
+        verification=dataclasses.replace(base_inputs.verification, calculation=calc),
+    )
+    display = build_display_payload(inputs, ())
+    assert display["fees_minor"] == "unknown"
+    assert display["tax_minor"] == "unknown"
