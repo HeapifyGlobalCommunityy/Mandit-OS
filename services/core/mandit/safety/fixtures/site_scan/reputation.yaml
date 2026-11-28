@@ -1,0 +1,6 @@
+# Synthetic rows for the domain_reputation table (fixture-backed in Phase 1).
+domains:
+  - { domain: croma.mock.mandit.local,         first_seen: 2019-03-01, reputation: GOOD,    source: fixture }
+  - { domain: reliancedigital.mock.mandit.local, first_seen: 2018-06-15, reputation: GOOD,  source: fixture }
+  - { domain: fastlaptopdeals.example.com,     first_seen: 2026-11-21, reputation: UNKNOWN, source: fixture }
+  - { domain: scamdeals.example,               first_seen: 2025-01-10, reputation: BAD,     source: fixture }

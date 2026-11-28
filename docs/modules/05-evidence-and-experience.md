@@ -14,7 +14,7 @@
 
 Team 5 makes every decision **provable and understandable**. The Evidence Ledger links the user's instruction, the agent identity, the content seen, the verified facts, the policy decision, the token and the payment result into one tamper-evident chain. Replay reproduces any decision from frozen inputs. Explanations tell the user, in plain language, what happened and why.
 
-> **Start early.** Every other team emits events from their first pull request. The ledger interface, the event envelope and a working in-memory (or simple Postgres) implementation must be on `develop` by the Week 2 gate. Integration then grows incrementally. Waiting until other modules are finished is explicitly ruled out.
+> **Start early.** Every other team emits events from their first pull request. The ledger interface, the event envelope and a working in-memory (or simple Postgres) implementation must be on `main` by the Week 2 gate. Integration then grows incrementally. Waiting until other modules are finished is explicitly ruled out.
 
 ## 2. Responsibilities
 

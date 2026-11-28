@@ -8,6 +8,12 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
+# Other teams' published types are used as-is, so `isinstance` checks and snapshots see the
+# objects those modules actually return (CONTRIBUTING rule 5: import from the interface only).
+from mandit.identity.schemas import AgentContext as AgentContext
+from mandit.safety.interface import RiskSignal as RiskSignal
+from mandit.safety.interface import RiskSummary as RiskSummary
+
 
 class DecisionOutcome(StrEnum):
     """Possible outcomes of policy evaluation per REFERENCE §11 and migration 0004."""
@@ -60,19 +66,6 @@ class RuleHit:
 
 
 @dataclass(frozen=True)
-class AgentContext:
-    """Agent execution context verified from KYA JWT and RFC 9421 signature."""
-
-    agent_id: str
-    operator_id: str
-    key_id: str
-    key_thumbprint: str  # RFC 7638 JWK thumbprint (base64url)
-    scopes: frozenset[str]
-    credential_id: str  # jti of KYA JWT
-    verified_at: datetime
-
-
-@dataclass(frozen=True)
 class IdentityResult:
     """Active identity status of the agent, operator, KYA token, and key binding."""
 
@@ -122,35 +115,6 @@ class MandateSnapshot:
 # --- Team 2 Contracts (Safety Scanning) ---
 
 
-@dataclass(frozen=True)
-class RiskSignal:
-    """Signal produced by safety scanner (e.g. site reputation or TLS anomalies)."""
-
-    signal_id: str
-    code: str
-    severity: Literal["LOW", "MEDIUM", "HIGH"]
-    detail: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class RiskSummary:
-    """Aggregated safety risk summary for referenced sources and target merchant."""
-
-    merchant_domain: str
-    site_risk_score: float  # 0.0 (safe) .. 1.0 (risky)
-    site_risk_level: Literal["LOW", "MEDIUM", "HIGH"]
-    max_injection_severity: Literal["NONE", "LOW", "MEDIUM", "HIGH"]
-    injection_content_ids: tuple[str, ...]
-    signals: tuple[RiskSignal, ...]
-    scanner_version: str
-
-    def __post_init__(self) -> None:
-        if not (0.0 <= self.site_risk_score <= 1.0):
-            raise ValueError(
-                f"site_risk_score must be within [0.0, 1.0], got {self.site_risk_score}"
-            )
-
-
 # --- Team 3 Contracts (Grounding & Verification) ---
 
 
@@ -185,9 +149,10 @@ class CalculationResult:
     reconciled: bool
     calculator_version: str
     subtotal_minor: int = 0
-    fees_minor: int = 0
+    # None means Team 3 did not report the amount; the approval screen then shows "unknown".
+    fees_minor: int | None = None
     discount_minor: int = 0
-    tax_minor: int = 0
+    tax_minor: int | None = None
     agent_stated_merchant_id: str | None = None
     agent_stated_currency: str | None = None
 
@@ -434,12 +399,7 @@ def to_snapshot_dict(inputs: FrozenDecisionInputs) -> dict[str, Any]:
             "injection_content_ids": list(inputs.risk.injection_content_ids),
             "scanner_version": inputs.risk.scanner_version,
             "signals": [
-                {
-                    "signal_id": getattr(s, "signal_id", ""),
-                    "code": getattr(s, "code", ""),
-                    "severity": getattr(s, "severity", "LOW"),
-                    "detail": getattr(s, "detail", None),
-                }
+                {"code": s.code, "weight": s.weight, "detail": s.detail, "source": s.source}
                 for s in inputs.risk.signals
             ],
         },
