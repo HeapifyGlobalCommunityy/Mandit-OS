@@ -27,8 +27,8 @@ warn_unused_ignores = true
 
 [tool.pytest.ini_options]
 testpaths = ["services/core/tests"]
-pythonpath = ["services/core"]
+pythonpath = ["services/core", "services/mock-psp"]
 addopts = "-ra"
 
 [tool.ruff.lint.isort]
-known-first-party = ["mandit"]
+known-first-party = ["mandit", "mock_psp"]

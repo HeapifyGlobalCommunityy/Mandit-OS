@@ -372,6 +372,41 @@ Event: `TOKEN_ISSUED` or `TOKEN_ISSUE_REFUSED` (with code).
 
 ### 7.3 `POST /v1/payment-tokens/redeem` (called by the mock PSP; service auth)
 
+#### Service Authentication Contract (REFERENCE §7.5, §8.3, §9.4)
+
+The token redemption endpoint is protected by mandatory service-to-service authentication:
+- **Header:** `Authorization: Service <jwt>`
+- **JWT Header:** `{"alg": "EdDSA", "typ": "JWT", "kid": "<key_id>"}`
+- **JWT Claims:**
+  - `iss`: Calling service identifier (`"mock-psp"`)
+  - `aud`: Target service identifier (`"mandit-core"`)
+  - `iat`: Timestamp (UTC epoch seconds)
+  - `exp`: Timestamp (UTC epoch seconds; strictly enforced maximum lifetime `exp - iat <= 300` seconds / 5 minutes)
+  - `jti`: Unique token UUID
+- **Key Isolation & Ownership:**
+  - The Mock PSP securely generates and maintains its Ed25519 private key in `PspKeyManager` (`key_id = "psp-2026-11"`). Mandit Core never stores or has access to this private key.
+  - Mandit Core verifies the incoming Ed25519 signature exclusively against a pre-registered public key corresponding to `kid`.
+- **Core Bootstrap Responsibility & Dependency Injection:**
+  - `services/core` is a modular monolith where domain routers are assembled by the root application / integration owner.
+  - Team 4 exposes the dependency-injection interface via `mandit.tokens.service_auth`:
+    - `get_service_auth_verifier() -> ServiceAuthVerifier`
+    - `set_service_auth_verifier(verifier: ServiceAuthVerifier) -> None`
+    - `ServiceAuthVerifier.register_trusted_key(key_id: str, public_key: ed25519.Ed25519PublicKey) -> None`
+  - **Registration Timing:** The Core application bootstrap owner must register the trusted Mock PSP public key during application startup (e.g. within FastAPI `lifespan` or the application factory) prior to serving traffic:
+    ```python
+    from mandit.tokens.service_auth import get_service_auth_verifier
+
+    # During application lifespan / startup:
+    verifier = get_service_auth_verifier()
+    verifier.register_trusted_key("psp-2026-11", psp_ed25519_public_key)
+    ```
+  - **Testing vs. Production:** FastAPI `app.dependency_overrides` is strictly reserved for test suites. Production bootstrap must use the verifier interface directly.
+  - **Fail-Closed Guarantee:** By default, `_SERVICE_AUTH_VERIFIER` contains an empty key registry. If Core is started without registering a trusted key, all `/redeem` requests fail closed with `401 UNAUTHORIZED` (`detail={"code": "UNAUTHORIZED", "message": "No trusted service keys configured (fail-closed)"}`).
+- **Replay Scope & Payment-Token CAS Guarantee:**
+  - The `Service <jwt>` authenticates the *calling service identity* and has a maximum lifetime of 300 seconds.
+  - **No request-level JWT replay protection:** The same service JWT can authenticate multiple redemption calls within its 300-second window.
+  - **Single-use guarantee is enforced at the database level:** Individual payment tokens are strictly single-use via atomic compare-and-set (`PaymentTokenModel.status == 'ISSUED' -> 'REDEEMING'`). Replayed attempts to redeem an already consumed token return `409 Conflict (TOKEN_ALREADY_REDEEMED)`.
+
 Request:
 
 ```json
@@ -456,7 +491,7 @@ Response `200`:
 
 ### 8.2 Reconciliation (worker)
 
-Every 30 seconds, the worker selects payments in `UNKNOWN` or `PENDING` older than 15 seconds and queries `GET /psp/v1/payments/{psp_payment_id}`. It then moves them to a terminal state and commits or releases the spend. After 10 minutes without resolution, it raises `INCIDENT_LOGGED` with `RECONCILIATION_TIMEOUT`. **A charge is never retried while a payment is `UNKNOWN`.**
+Every 30 seconds, the worker selects payments in `CREATED`, `UNKNOWN` or `PENDING` older than 15 seconds and queries `GET /psp/v1/payments/{psp_payment_id}`. A payment whose PSP answer was lost has no `psp_payment_id`; the worker finds it with `GET /psp/v1/payments?idempotency_key=<payment_id>:auth` (card) or `:upi`. If the PSP has no such payment and the token has expired, so no request can still charge it, the payment is `FAILED` and the spend is released. It then moves them to a terminal state and commits or releases the spend. After 10 minutes without resolution, it raises `INCIDENT_LOGGED` with `RECONCILIATION_TIMEOUT`. **A charge is never retried while a payment is `UNKNOWN`.**
 
 ### 8.3 Webhooks: `POST /v1/payments/webhooks/mock-psp`
 
@@ -492,9 +527,10 @@ A separate service with its own database and keys. Card and UPI semantics follow
 | Endpoint | Request | Response | Notes |
 |---|---|---|---|
 | `POST /psp/v1/card/scoped-credentials` | `{ "mandit_token", "merchant_id", "max_amount_minor", "currency", "expires_at" }` | `201 { "credential_id": "spc_...", "status": "ACTIVE" }` | Calls Mandit `/v1/payment-tokens/redeem` first; refuses if it is rejected |
-| `POST /psp/v1/card/authorize` | `{ "credential_id", "merchant_id", "amount_minor", "currency", "idempotency_key" }` | `200 { "psp_payment_id", "status": "AUTHORIZED" \| "FAILED", "decline_code" }` | Enforces seller, `amount ≤ max`, expiry and single use **independently** (defence in depth) |
+| `POST /psp/v1/card/authorize` | `{ "credential_id", "merchant_id", "amount_minor", "currency", "idempotency_key" }` | `200 { "psp_payment_id", "status": "AUTHORIZED" \| "FAILED", "decline_code" }` | Enforces seller, `amount ≤ max`, expiry and single use **independently** via atomic CAS (`UPDATE ... WHERE status = 'ACTIVE'`) (defence in depth) |
 | `POST /psp/v1/card/capture` | `{ "psp_payment_id", "amount_minor" }` | `200 { "status": "CAPTURED" }` | `amount ≤ authorized`, otherwise `CAPTURE_EXCEEDS_AUTH` |
 | `GET /psp/v1/payments/{id}` | n/a | `200 { "psp_payment_id", "status", "amount_minor", "currency", "merchant_id" }` | Reconciliation source |
+| `GET /psp/v1/payments?idempotency_key=` | n/a | Same as above, or `404 PAYMENT_NOT_FOUND` | Finds a payment whose authorize or intent answer was lost |
 
 States: `CREATED → AUTHORIZED → CAPTURED`; `FAILED`.
 
@@ -506,7 +542,7 @@ States: `CREATED → AUTHORIZED → CAPTURED`; `FAILED`.
 | `POST /psp/v1/upi/intents/{id}/approve` | `{ "payer_vpa": "demo.user@mockbank" }` | `200 { "status": "SUCCESS" }` and a signed callback |
 | `POST /psp/v1/upi/intents/{id}/decline` | `{}` | `200 { "status": "FAILED" }` and a signed callback |
 
-States: `CREATED → PENDING → SUCCESS`; `FAILED`; `EXPIRED`. The payee VPA must equal the token's `payee_id` (`CHANGED_PAYEE` otherwise).
+States: `CREATED → PENDING → SUCCESS`; `FAILED`; `EXPIRED`. The payee VPA must equal the token's `payee_id` (`CHANGED_PAYEE` otherwise). Expired intents (`expires_at ≤ now`) reconcile to `EXPIRED` together with their associated payment during status retrieval (`GET /psp/v1/payments/{id}`) or upon approval submission (returning 410 `INTENT_EXPIRED`), emitting a signed `payment.failed` webhook without duplicates.
 
 ### 9.3 Fault injection (`POST /psp/v1/admin/faults`, test and demo profiles only)
 

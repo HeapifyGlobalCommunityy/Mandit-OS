@@ -640,6 +640,7 @@ This catalogue lists every endpoint. Request and response bodies are specified i
 | POST | `/psp/v1/upi/intents/{intent_id}/approve` | Simulated payer approval |
 | POST | `/psp/v1/upi/intents/{intent_id}/decline` | Simulated payer decline |
 | GET | `/psp/v1/payments/{psp_payment_id}` | Status (used for reconciliation) |
+| GET | `/psp/v1/payments?idempotency_key=` | Status by idempotency key, for payments whose PSP answer was lost |
 | GET | `/.well-known/psp-keys.json` | PSP webhook-signing public keys |
 | POST | `/psp/v1/admin/faults` | Test-only fault injection (disabled outside the `test` and `demo` profiles) |
 
