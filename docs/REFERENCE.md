@@ -1199,6 +1199,7 @@ Status values: `Planned`, `Implemented`, `Tested` (corpus passing in CI), `Phase
 | 2026-11-25 | T2: credential-layer controls implemented (pinned EdDSA KYA JWT verification, `cnf.jkt` key binding, small-order Ed25519 key rejection) with corpus cases `impersonation/ATK-IMP-001` to `006`. RFC 9421 request signatures, nonce replay and revocation remain Planned, so T2 status stays Planned. | Team 1 |
 | 2026-11-26 | T5: site scanner with registry, look-alike, domain-age and reputation signals added (detective control). Payee binding and signed checkout remain Planned, so T5 status stays Planned. Two residual risks added for external lookups. | Team 2 |
 | 2026-11-26 | Added T19 (scanner SSRF) and two residual risks found in the Team 2 safety-scanning review | Team 2 |
+| 2026-11-27 | T2: operator verification gate and one-key-one-agent uniqueness at agent registration, with corpus cases `impersonation/ATK-IMP-007` and `008`. T2 status stays Planned. | Team 1 |
 
 ---
 

@@ -1,0 +1,19 @@
+# An operator that has not passed verification (KYB) registers an agent, hoping to obtain a
+# working agent identity before anyone has checked who is behind it.
+id: ATK-IMP-007
+title: Agent registration under an unverified operator
+threat_class: T2_AGENT_IMPERSONATION     # REFERENCE Appendix C
+family: unverified_operator
+severity: HIGH
+version: 1
+mode: scripted
+credential_attack: unverified_operator_registration   # replayed by services/core/tests/identity
+steps:
+  - endpoint: POST /v1/agents/register   # operator status PENDING (also run with SUSPENDED)
+    expect_status: 403
+expected:
+  outcome_in: [DENIED]
+  token_issued: false
+  payment_executed: false
+  reason_codes_include_any: [OPERATOR_NOT_VERIFIED]
+controls_under_test: [operator_verification_gate]

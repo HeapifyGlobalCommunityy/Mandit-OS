@@ -1,5 +1,5 @@
 # Runtime dependencies. Add a package in the same PR that first imports it.
-sqlalchemy>=2.0,<2.1
+sqlalchemy[asyncio]>=2.0,<2.1
 alembic>=1.13
 psycopg[binary]>=3.2
 python-dotenv>=1.0
