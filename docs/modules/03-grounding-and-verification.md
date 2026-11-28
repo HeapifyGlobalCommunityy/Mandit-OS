@@ -47,10 +47,19 @@ class GroundingService(Protocol):
     async def latest_verification(self, proposal_id: str) -> VerificationReport: ...
 ```
 
+**Registry interface as implemented.** Only the registry part of `interface.py` exists, added with the Team 2 site scanner. Team 3 has still to review it (issue #5).
+
+```python
+class MerchantDirectory(Protocol):
+    async def get_merchant(self, merchant_id: str) -> Merchant | None: ...
+    async def resolve_domain(self, domain: str) -> Merchant | None: ...   # domain or a parent of it, any status
+    async def list_domains(self) -> list[str]: ...                        # all domains of VERIFIED merchants
+```
+
 | Consumer | Uses |
 |---|---|
 | Team 1 | `get_merchant` and the registry list for the mandate form and validation |
-| Team 2 | `resolve_domain` (look-alike detection), `store_checkout` |
+| Team 2 | `resolve_domain` (registry membership, payees), `list_domains` (look-alike detection), `store_checkout` |
 | Team 4 | `verify`, `latest_verification`, `refetch_checkout`, `get_merchant` (payee) |
 | Team 5 | Claims, facts and verification reports in snapshots |
 | Team 6 | Fixture loader for malicious merchants; fabricated-claim scenarios |
@@ -163,7 +172,7 @@ CREATE TABLE merchants (
   merchant_id     TEXT PRIMARY KEY,
   legal_name      TEXT NOT NULL,
   domains         TEXT[] NOT NULL,
-  payees          JSONB NOT NULL,          -- {"card_acquirer_id": "...", "upi_vpa": "..."}
+  payees          JSONB NOT NULL,          -- {"card_acquirer_id": "...", "upi_vpas": ["..."]}
   categories      TEXT[] NOT NULL,
   base_url        TEXT NOT NULL,
   status          TEXT NOT NULL CHECK (status IN ('VERIFIED','SUSPENDED')),
@@ -174,7 +183,15 @@ CREATE TABLE merchant_keys (
 );
 ```
 
-`GET /v1/merchants/{merchant_id}` returns the row. Malicious fixture merchants are **not** in the registry unless the scenario explicitly tests a compromised registered merchant.
+`GET /v1/merchants/{merchant_id}` returns the row. `GET /v1/merchants?domain=` returns the merchant that owns the domain or a parent of it. Both return `404 MERCHANT_NOT_IN_REGISTRY` when nothing matches. Malicious fixture merchants are **not** in the registry unless the scenario explicitly tests a compromised registered merchant.
+
+**Phase 1 implementation status** (issue #5):
+
+- The registry is a file, `grounding/registry/merchants.yaml` (`MANDIT_REGISTRY_FILE` selects another). The `merchants` table is not used yet, and there are no `merchant_keys`.
+- A merchant may list several UPI payees (`upi_vpas`).
+- Loading fails on duplicate merchant IDs or on domains that two merchants both claim.
+- The file records domain ownership but does not verify it.
+- The routes have no authentication yet. The `cloud` profile refuses to start on the file registry.
 
 ## 6. Proposals
 

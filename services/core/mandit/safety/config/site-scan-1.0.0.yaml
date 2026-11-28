@@ -1,0 +1,31 @@
+# Web Safety Scanner configuration (modules/02 section 6.2).
+# Changing a weight or threshold is a contract change: bump scanner_version and the file name.
+scanner_version: site-scan-1.0.0
+
+# site_risk_score = min(1.0, sum of weights of the signals that fired).
+thresholds:
+  medium: 0.30   # score >= medium -> MEDIUM
+  high: 0.60     # score >= high   -> HIGH
+
+lookalike:
+  max_edit_distance: 2      # Damerau-Levenshtein on the full host
+  min_brand_label_length: 5 # shorter brand labels only match through the confusable skeleton
+
+domain_new_days: 30
+
+# Payment processors whose iframes and form targets are acceptable for every merchant.
+# Empty in Phase 1: the spec flags any payment origin outside the merchant's own domains.
+payment_processor_domains: []
+
+signals:
+  DOMAIN_NOT_IN_REGISTRY:  { weight: 0.40, enabled: true }
+  DOMAIN_LOOKALIKE:        { weight: 0.25, enabled: true }
+  DOMAIN_NEW:              { weight: 0.10, enabled: true }
+  DOMAIN_REPUTATION_BAD:   { weight: 0.40, enabled: true }
+  TLS_INVALID:             { weight: 0.20, enabled: true }
+  NO_TLS:                  { weight: 0.20, enabled: true }
+  CHECKOUT_PAYEE_MISMATCH: { weight: 0.30, enabled: true }
+  EXTERNAL_PAYMENT_IFRAME: { weight: 0.15, enabled: true }
+  # Need the Playwright fetch worker (week 5); disabled until it exists.
+  SUSPICIOUS_SCRIPT:       { weight: 0.15, enabled: false }
+  DRIP_PRICING:            { weight: 0.10, enabled: false }

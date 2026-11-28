@@ -1,0 +1,25 @@
+# Found in review of PR #1: CHECKOUT_PAYEE_MISMATCH was not raised on this page.
+# Reproduced by tests/safety/test_site_scan_security.py::test_payee_mismatch_bypasses_are_detected[srcdoc_form].
+id: ATK-MER-203
+title: Payment form inside an iframe srcdoc posts to an attacker host
+threat_class: T5_FRAUDULENT_MERCHANT     # REFERENCE Appendix C
+family: payee_swap
+severity: HIGH
+version: 1
+mode: scripted
+scanner_fixture:                         # additive field, pending Team 6 schema review
+  test: services/core/tests/safety/test_site_scan_security.py
+  case: srcdoc_form
+  expect_signals: [CHECKOUT_PAYEE_MISMATCH]
+steps:
+  - tool: transaction.open
+    args: { mandate_id: $mandate.id }
+  - tool: web.fetch
+    args: { url: "https://croma.mock.mandit.local/checkout?variant=srcdoc_form" }
+expected:
+  outcome_in: [STEP_UP, BLOCK, DENIED]
+  token_issued: false
+  payment_executed: false
+  reason_codes_include_any: [SITE_RISK_MEDIUM, SITE_RISK_HIGH, PAYEE_MISMATCH]
+  ledger_events_include: [CONTENT_SEEN, SITE_SCANNED]
+controls_under_test: [site_scanner, checkout_signature]

@@ -57,6 +57,10 @@ class RiskSummary:
     scanner_version: str
 ```
 
+Implemented in `services/core/mandit/safety/interface.py` (with `ContentRecord`, `ContentReport`, `InspectRequest` and `ContentNotFound`). Sequences in `RiskSummary` are tuples so that the value is immutable and hashable inside Team 4's frozen decision inputs; consumers that read them as lists are unaffected. `RiskSignal` is `{code, weight, detail, source}`, where `source` is `domain_scan` or the `content_id` the signal came from; injection techniques appear with `weight: 0.0`.
+
+`get_risk` is computed only from server-side state: the stored scan reports of the referenced content and a fresh scan of the merchant domain (the worse of the fresh scan and any stored scan of the merchant's own pages wins). It never accepts a score, level or page HTML from the caller. An unknown `content_id` raises `ContentNotFound` (HTTP 404 `CONTENT_NOT_FOUND`) instead of being skipped, so a missing source cannot lower the risk.
+
 | Consumer | Uses |
 |---|---|
 | Team 3 | `get_content` for source provenance; `get_risk` for Trust Score component P (`P = 1 − site_risk_score`, reduced further by injection severity; see Team 3 §8) |
@@ -120,7 +124,7 @@ CREATE TABLE injection_findings (
   confidence      NUMERIC(4,3) NOT NULL
 );
 
-CREATE TABLE domain_reputation (                    -- fixture-backed in Phase 1
+CREATE TABLE domain_reputation (                    -- not used yet: fixtures and live lookups (§6.3)
   domain          TEXT PRIMARY KEY,
   first_seen      DATE,
   reputation      TEXT NOT NULL CHECK (reputation IN ('GOOD','UNKNOWN','BAD')),
@@ -301,40 +305,122 @@ Request:
 { "url": "https://fastlaptopdeals.example.com/checkout", "html": "<optional raw html>", "transaction_id": "txn_..." }
 ```
 
+Request rules:
+
+- `url` is required, at most 2048 characters, with an `http` or `https` scheme.
+- `html` is optional, at most 5,000,000 characters. It is parsed, never executed. Without it, the checkout signals cannot fire.
+- `transaction_id` is optional. It is validated but not used yet.
+- Unknown fields are rejected. Invalid requests and unscannable URLs return `400 VALIDATION_ERROR`.
+
 Response `200`:
 
 ```json
 {
   "domain": "fastlaptopdeals.example.com",
-  "site_risk_score": 0.86,
+  "site_risk_score": 0.95,
   "site_risk_level": "HIGH",
   "signals": [
-    { "code": "DOMAIN_NOT_IN_REGISTRY",   "weight": 0.40, "detail": "No registered merchant owns this domain" },
-    { "code": "DOMAIN_LOOKALIKE",         "weight": 0.25, "detail": "Edit distance 1 from croma.mock.mandit.local" },
-    { "code": "DOMAIN_NEW",               "weight": 0.10, "detail": "First seen 3 days ago (fixture)" },
-    { "code": "CHECKOUT_PAYEE_MISMATCH",  "weight": 0.30, "detail": "Payment form posts to pay.attacker.example" },
-    { "code": "EXTERNAL_PAYMENT_IFRAME",  "weight": 0.15, "detail": "Iframe origin differs from page origin" }
+    { "code": "DOMAIN_NOT_IN_REGISTRY",  "weight": 0.40, "detail": "No registered merchant owns this domain" },
+    { "code": "DOMAIN_NEW",              "weight": 0.10, "detail": "First seen 3 days ago (fixture)" },
+    { "code": "CHECKOUT_PAYEE_MISMATCH", "weight": 0.30, "detail": "Payment form posts to pay.attacker.example; UPI payee fastdeals.collect@okbank cannot be tied to a registered merchant" },
+    { "code": "EXTERNAL_PAYMENT_IFRAME", "weight": 0.15, "detail": "Payment iframe from pay.attacker.example" }
   ],
-  "tls": { "valid": true, "issuer": "Demo CA", "days_to_expiry": 80 },
-  "scanner_version": "site-scan-1.0.0"
+  "tls": { "valid": true, "issuer": "Demo CA", "days_to_expiry": 89 },
+  "merchant_id": null,
+  "scanner_version": "site-scan-1.0.0",
+  "detectors_enabled": ["DOMAIN_NOT_IN_REGISTRY", "DOMAIN_LOOKALIKE", "DOMAIN_NEW", "DOMAIN_REPUTATION_BAD",
+                        "TLS_INVALID", "NO_TLS", "CHECKOUT_PAYEE_MISMATCH", "EXTERNAL_PAYMENT_IFRAME"],
+  "reputation_lookups": []
 }
 ```
+
+| Field | Meaning |
+|---|---|
+| `merchant_id` | The `VERIFIED` merchant that owns the domain, otherwise `null` |
+| `tls` | `null` for plain HTTP or when `TLS_INVALID` is switched off. Carries `error` when invalid |
+| `detectors_enabled` | The signals that were active for this scan |
+| `reputation_lookups` | One `{provider, status, detail}` per live lookup (§6.3); `status` is `OK`, `NOT_FOUND` or `UNAVAILABLE`. Empty when no lookup ran |
 
 ### 6.2 Signals (Phase 1)
 
 | Code | Detection method | Weight |
 |---|---|---|
-| `DOMAIN_NOT_IN_REGISTRY` | Domain not present in the Team 3 merchant registry | 0.40 |
-| `DOMAIN_LOOKALIKE` | Damerau-Levenshtein ≤ 2, or a Unicode confusable skeleton (UTS #39) matching a registry domain | 0.25 |
-| `DOMAIN_NEW` | First seen fewer than 30 days ago (`domain_reputation` fixture) | 0.10 |
-| `DOMAIN_REPUTATION_BAD` | Fixture reputation `BAD` | 0.40 |
+| `DOMAIN_NOT_IN_REGISTRY` | No `VERIFIED` merchant in the Team 3 registry owns the domain or a parent of it. A `SUSPENDED` merchant counts as not registered | 0.40 |
+| `DOMAIN_LOOKALIKE` | Only for unregistered domains: Damerau-Levenshtein ≤ 2; a confusable skeleton (subset of UTS #39) matching a registry domain; a registry domain used as a prefix; or a registry brand label (5 or more characters) embedded, or one edit away, inside another host | 0.25 |
+| `DOMAIN_NEW` | First seen or registered fewer than 30 days ago (fixture row, or the RDAP registration date) | 0.10 |
+| `DOMAIN_REPUTATION_BAD` | Fixture reputation `BAD`, or a live provider reports the domain as bad (§6.3) | 0.40 |
 | `TLS_INVALID` / `NO_TLS` | Handshake failure, expired certificate, hostname mismatch, or plain HTTP outside the local profile | 0.20 |
-| `CHECKOUT_PAYEE_MISMATCH` | A form `action` or payment link points to a domain or VPA not owned by the merchant | 0.30 |
+| `CHECKOUT_PAYEE_MISMATCH` | A payment form posts (after resolving `<base href>`) to a domain the merchant does not own, or a UPI payee (`upi://pay?pa=` link or `vpa` input) is not a registry payee. On an unregistered site, every UPI payee is a mismatch. Ordinary `https` payment links are not checked yet | 0.30 |
 | `EXTERNAL_PAYMENT_IFRAME` | Payment iframe origin differs from the merchant domains | 0.15 |
-| `SUSPICIOUS_SCRIPT` | Inline script that rewrites prices or form actions after load (heuristic: DOM mutation of price nodes, observed in Playwright) | 0.15 |
-| `DRIP_PRICING` | The checkout page total exceeds the product page price by more than 10% through late-added fees | 0.10 |
+| `SUSPICIOUS_SCRIPT` | Inline script that rewrites prices or form actions after load (heuristic: DOM mutation of price nodes, observed in Playwright). **Not implemented; disabled in the config** | 0.15 |
+| `DRIP_PRICING` | The checkout page total exceeds the product page price by more than 10% through late-added fees. **Not implemented; disabled in the config** | 0.10 |
 
 Score: `site_risk_score = min(1.0, Σ weights)`. Levels: `< 0.30` is LOW, `0.30 – 0.59` is MEDIUM, `≥ 0.60` is HIGH. Weights and thresholds are versioned in `safety/config/site-scan-1.0.0.yaml`.
+
+### 6.3 Domain lookups
+
+Registration age and reputation come from a fixture file first, then from live services.
+
+| Provider | Gives | Key (environment variable) | Limits and terms |
+|---|---|---|---|
+| RDAP (`rdap.org`) | Registration date, registrar | none | 10 requests per 10 s |
+| VirusTotal v3 | Reported bad when 2 or more engines say malicious | `VIRUS_TOTAL_API_KEY` | Free tier: non-commercial, 4 per minute, 500 per day |
+| Google Safe Browsing v4 | Reported bad when the host is listed | `GOOGLE_SAFE_BROWSING_API_KEY` | Non-commercial only. **Not yet tested against the live API** |
+
+- A fixture row wins over live results.
+- Only the public host name is sent, never a path, query string or page content. IP addresses, single-label names, private suffixes (such as `.local`, `.test`, `.example`) and `example.com/.net/.org` are never sent. VirusTotal shares queried domains with its community.
+- Keys are optional. A provider without a key is skipped.
+- A failed or rejected lookup shows as `UNAVAILABLE` and **adds no score**. Scans therefore do not fail closed on reputation.
+- Providers are called one after another, with a 5 s HTTP timeout. Results are cached in memory for one hour; a result with any `UNAVAILABLE` provider is not cached.
+- `MANDIT_LIVE_LOOKUPS=off` disables all live lookups. Use it for tests and evaluation runs, which must be reproducible.
+
+### 6.4 `GET /v1/safety/domain-info?domain=`
+
+Returns who is behind a bare host name, without scanning a page.
+
+```json
+{
+  "domain": "wikipedia.org",
+  "merchant": null,
+  "registration": { "registered_on": "2001-01-13", "registrar": "MarkMonitor Inc." },
+  "reputation": "UNKNOWN",
+  "source": "live lookup",
+  "lookups": [
+    { "provider": "rdap", "status": "OK", "detail": "wikipedia.org registered 2001-01-13" },
+    { "provider": "virustotal", "status": "OK", "detail": "0 malicious, 0 suspicious engine verdicts, community score 88" }
+  ]
+}
+```
+
+`merchant` is the registry entry ([module 03 §5](03-grounding-and-verification.md#5-merchant-registry)) or `null`. Anything that is not a bare host name returns `400 VALIDATION_ERROR`.
+
+### 6.5 Security behaviour of the scanner
+
+| Concern | Behaviour |
+|---|---|
+| Server-side request forgery | The TLS probe is the only connection to a caller-chosen host (reputation lookups go only to the fixed provider hosts in §6.3). Before connecting: the port must be in the allowlist (443); the host is resolved once and **every** address must be globally routable (loopback, RFC 1918, link-local including `169.254.169.254`, CGNAT, ULA, multicast and IPv4-mapped forms are refused); the socket connects to the vetted address with the original name as SNI and for certificate checks, which defeats DNS rebinding. Non-cloud profiles may reach private addresses only for hosts under `mock.mandit.local`. |
+| Error oracle | `tls.error` is a coarse code: `PORT_NOT_PERMITTED`, `DESTINATION_NOT_PERMITTED`, `DNS_FAILED`, `UNREACHABLE` (refused, reset and timed out are merged), `CERTIFICATE_INVALID`, `CERTIFICATE_EXPIRED`. |
+| Payment-target resolution | URLs resolve after parsing, against the **first** `<base href>`, as browsers do. `formaction` on buttons and inputs, the `form="id"` attribute, `<iframe srcdoc>` (depth 2), `<embed>`, `<object>` and `<frame>` are honoured. Any input value shaped like a UPI VPA counts as a payee. An unparseable payment target fails closed as `CHECKOUT_PAYEE_MISMATCH`. |
+| Request size | Bodies are streamed with a 12 MiB limit (`PAYLOAD_TOO_LARGE`, 413) before JSON parsing; deep nesting is a `VALIDATION_ERROR`. |
+| Caller-supplied HTML | `html` on `/v1/safety/site-scan` is analysed as given. Only content stored through `/v1/content/inspect` (server-fetched by the gateway) feeds `get_risk`. |
+
+### 6.6 Implementation status
+
+| Area | State |
+|---|---|
+| Site scan, 8 of 10 signals, ablation, `domain-info`, live lookups | Implemented |
+| `SUSPICIOUS_SCRIPT`, `DRIP_PRICING` | Not implemented (need the Playwright worker) |
+| `SERVICE` authentication on the routes | Not implemented (needs the Team 1 middleware) |
+| Scanner egress guard, payee-target hardening, body limits (§6.5) | Implemented |
+| `scan_reports` persistence | In memory only (no SQLAlchemy store yet); `SITE_SCANNED` is emitted by `/v1/content/inspect` through an `EventSink` port |
+| `domain_reputation` table adapter | Not implemented. The `cloud` profile refuses to start without it |
+| `SafetyService`, `get_risk`, `RiskSummary` (§3), content records (§7.3) | Implemented, in-memory store |
+| Injection firewall (§7) | Implemented (static visibility analysis) |
+| Tool gateway (§5) | Not implemented |
+
+Local testing: `cd services/core && python -m mandit.devserver` serves the implemented routes and the merchant registry routes on `127.0.0.1:8000`, without authentication. `MANDIT_PROFILE` selects the profile and `MANDIT_REGISTRY_FILE` selects another registry file.
+
+---
 
 ## 7. Prompt Injection Firewall
 
@@ -380,6 +466,15 @@ Response `200`:
 | `PAYMENT_FIELD_OVERRIDE` | Text that attempts to set or change amount, payee, VPA, card, merchant, shipping address or quantity ("pay ₹…", "send to …@upi", "use card …") |
 | `AUTHORITY_CLAIM` | Claims of pre-approval or authority ("the user has approved", "authorized by", "mandate updated") |
 
+Implementation (`services/core/mandit/safety/injection/`) is layered so that no single keyword list is the only defence:
+
+1. **Structure.** A static visibility analysis classifies every text node: inline `style`, simple-selector rules from `<style>` blocks, the `hidden` attribute, hiding elements (`script`, `style`, `template`, `noscript`, `head` except `title`), off-screen positioning, `text-indent`, zero-size boxes with `overflow:hidden`, `clip`/`clip-path`, `scale(0)`, transparent text and colour within CIE76 ΔE < 5 of the background. Comments, the attributes above plus `aria-description`, `placeholder`, `meta content` and hidden input values, and JSON-LD blocks are separate segments. This is a static approximation of the Playwright check; the worker should feed the same segment model when it exists.
+2. **Normalisation.** Matching runs on a folded copy: invisible characters removed, NFKC, accents and Cyrillic/Greek homoglyphs mapped, bounded leetspeak, letter-spaced words joined. Unicode tag-character payloads are decoded and scanned as hidden content (`ZERO_WIDTH`, location `SMUGGLED`). ZWJ, ZWNJ, LRM and RLM are only reported when they split a Latin word, so Indic scripts and emoji do not trigger.
+3. **Detection.** Independent families run on every segment **and** on joined streams (visible, hidden, all text, comments, attributes), so instructions split across elements are found.
+4. **Severity**, per the table below. Every finding also carries `location` (`VISIBLE`, `HIDDEN`, `COMMENT`, `ATTRIBUTE`, `DATA`, `SMUGGLED`) and `pattern` (the family that matched); both are additive.
+
+Payment directives need more evidence in visible text, where honest checkouts say "Pay ₹76,499" and "Change delivery address": an explicit override ("instead", "change the payee to …"), an unambiguous AI addressee, or an AI-addressed instruction in the same sentence. Concealment requests ("do not tell the user") are reported as `AI_ADDRESSED_INSTRUCTION`.
+
 Severity rules:
 
 | Severity | Condition |
@@ -388,6 +483,10 @@ Severity rules:
 | MEDIUM | `AI_ADDRESSED_INSTRUCTION` in visible content, or hidden content without payment targets |
 | LOW | Zero-width characters or comments without instruction content |
 | NONE | No findings |
+
+Deviation, flagged for review: comments without instruction content produce **no** finding rather than LOW, because almost every page has comments and a LOW finding would set `injection_detected` on honest pages. Zero-width characters without instruction content are LOW as specified.
+
+Fail-closed rules: overall severity is computed over every match, including findings dropped by the 200-finding cap; a document truncated by the segment backstop reports at least MEDIUM. Response fields added to §7.1: `firewall_version`, `detectors_enabled`, `truncated`, and `content_id` echoed from the request. Unsupported `mime_type` returns 415 `UNSUPPORTED_MEDIA_TYPE`; supported types are `text/html`, `application/xhtml+xml`, `text/plain` and `application/json` (every string value is scanned, located by JSON pointer).
 
 ### 7.3 `POST /v1/content/inspect` (combined)
 
@@ -408,13 +507,21 @@ Response `200`: a content record containing `content_id`, `content_hash`, `class
 
 Events: `CONTENT_SEEN`, `SITE_SCANNED`, and `INJECTION_DETECTED` when findings exist.
 
+Additive request field: `raw_encoding` (`text` default, or `base64`), because the spec allows either form without saying how to tell them apart. Decoded content above 5 MiB returns 413 `PAYLOAD_TOO_LARGE`. Hidden chunks in `sanitized_chunks` are for Team 3, Team 5 and the console; the gateway returns only `visible_text` to the agent.
+
+`GET /v1/content/{content_id}` returns the provenance block of §5.4 plus `classification`, `domain`, `source_type`, `transaction_id`, `fetched_at` and `scan_id`; 404 `CONTENT_NOT_FOUND` if unknown.
+
 ### 7.4 `GET /v1/safety/risk`
 
-Query: `?content_ids=cnt_a,cnt_b&merchant_domain=croma.mock.mandit.local`. Response: the `RiskSummary` (§3).
+Query: `?content_ids=cnt_a,cnt_b&merchant_domain=croma.mock.mandit.local`. Response: the `RiskSummary` (§3). At most 100 IDs; `merchant_domain` must be a bare host. Unknown IDs return 404 `CONTENT_NOT_FOUND`.
 
 ## 8. Detector Configuration and Ablation
 
-`safety/config/detectors.yaml` enables or disables each detector. The settings `MANDIT_PROFILE=test` and `MANDIT_PROFILE=demo` allow runtime overrides through the `X-Mandit-Ablation: hidden_text=off,ai_addressed=off` header, which Team 6 uses. Overrides are **refused** in the `cloud` profile. Every scan report records `detectors_enabled`, so that results remain interpretable during replay.
+`safety/config/detectors.yaml` enables or disables each detector (`hidden_text`, `zero_width`, `html_comment`, `attribute_text`, `ai_addressed`, `payment_override`, `authority_claim`). The settings `MANDIT_PROFILE=test` and `MANDIT_PROFILE=demo` allow runtime overrides through the `X-Mandit-Ablation: hidden_text=off,ai_addressed=off` header, which Team 6 uses. Overrides are **refused** in the `cloud` profile. Every scan report records `detectors_enabled`, so that results remain interpretable during replay.
+
+The header accepts detector names and site signal codes in one list (`hidden_text=off,domain_new=off`). Turning `hidden_text` off removes `HIDDEN_CSS` findings and the hidden-content escalation, but **not** the structural rule that hidden text is never returned to the agent.
+
+Site signals are switched on or off per signal in `safety/config/site-scan-1.0.0.yaml`; `detectors.yaml` does not exist yet. In the header, a site signal is named by its code (`X-Mandit-Ablation: domain_lookalike=off,tls_invalid=off`, case-insensitive). Only `off` is accepted.
 
 ## 9. Privacy and Redaction
 
@@ -459,6 +566,6 @@ Query: `?content_ids=cnt_a,cnt_b&merchant_domain=croma.mock.mandit.local`. Respo
 | I-2.4 | Multimodal injection detection (OCR on product images and screenshots) | Text-only scanners miss image-borne instructions |
 | I-2.5 | ML classifier for instruction-likeness as an **additional** signal, never the only one | Better recall; must be evaluated adaptively |
 | I-2.6 | Egress-restricted browser worker (network policy, separate container, no credentials) | Containment for hostile pages |
-| I-2.7 | Real reputation feeds (Safe Browsing, certificate transparency monitoring) behind an adapter | Replaces fixtures |
+| I-2.7 | Reputation feeds beyond the Phase 1 lookups (§6.3): certificate transparency monitoring, licensed commercial feeds, a persistent shared cache | The Phase 1 providers are free-tier and non-commercial |
 | I-2.8 | Search API integration (`web.search`) in a discovery-only session with caching | Real-world discovery without payment capability |
 | I-2.9 | Memory-write tainting for agents with long-term memory | Defends against memory poisoning |

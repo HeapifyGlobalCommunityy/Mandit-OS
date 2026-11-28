@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Document status | Baseline v0.1 (Phase 1) |
-| Last updated | 23 November 2026 |
+| Last updated | 26 November 2026 |
 | Applies to | All teams |
 | Source documents | *Mandit OS: A Trust and Security Layer for Agentic Payments* (22-page brief); *Mandit OS PRD and Technical Architecture* v0.1, including Section 14, "Final Architecture Decisions (Approved)"; *Mandit OS Deep Dive* (20 November 2026) |
 | Change control | Changes to this document require a pull request labelled `contract-change` and approval from at least two teams. See [CONTRIBUTING.md](../CONTRIBUTING.md). |
@@ -198,6 +198,7 @@ Local orchestration uses Docker Compose (`deploy/docker-compose.yml`). The cloud
 | Agent integration | Model Context Protocol (MCP) server exposed by the Gateway |
 | Browser automation | Playwright |
 | Testing | pytest, Hypothesis (property tests), Playwright Test, Jest/Vitest for the console |
+| External lookups | RDAP, VirusTotal, Google Safe Browsing: optional, non-commercial, host names only ([module 02 §6.3](modules/02-safety-scanning.md#63-domain-lookups)) |
 | Delivery | Docker, Docker Compose, CI on every pull request |
 
 ---
@@ -582,6 +583,7 @@ This catalogue lists every endpoint. Request and response bodies are specified i
 | GET | `/v1/content/{content_id}` | USER, SERVICE | Read a content record and its scan results |
 | POST | `/v1/safety/site-scan` | SERVICE | Domain, TLS and checkout-integrity scan only |
 | POST | `/v1/safety/injection-scan` | SERVICE | Injection scan only, on supplied content |
+| GET | `/v1/safety/domain-info?domain=` | SERVICE | Registry entry, registration data and reputation of a domain |
 | GET | `/v1/safety/risk` | SERVICE | Aggregated risk for a list of `content_id` values and a merchant domain |
 
 ### 9.3 Team 3: Grounding and Verification
@@ -862,7 +864,7 @@ Until real implementations land, each team ships **stub implementations** of its
 
 | Window | Focus | Gate (exit criterion) |
 |---|---|---|
-| Weeks 1–2 | Threat model, schemas, interfaces, stubs, repository, CI, Compose, design note per module | **G1:** contracts in Section 14.1 merged to `develop`; every module has a reviewed design note; CI green |
+| Weeks 1–2 | Threat model, schemas, interfaces, stubs, repository, CI, Compose, design note per module | **G1:** contracts in Section 14.1 merged to `main`; every module has a reviewed design note; CI green |
 | Weeks 3–4 | Identity, mandates, mandate dashboard, mock merchant (honest), mock PSP (card), token service (basic), ledger skeleton, gateway skeleton | **G2:** happy path from agent registration to a tokenized mock payment, with ledger events |
 | Weeks 5–6 | Scanner, injection firewall, claim verification, calculator, rules-based policy, token binding and TOCTOU, malicious merchant fixtures | **G3:** the primary attack scenario is blocked before token issue, with evidence |
 | Weeks 7–8 | Trust Score, human confirmation, UPI-like flow, explanations, audit dashboard, replay, cloud deployment | **G4:** first complete end-to-end run of both demo scenarios; replay reproduces decisions |
@@ -1035,6 +1037,9 @@ Column legend: **HTTP** is the status when the code is returned as an HTTP error
 | `INJECTION_DETECTED_HIGH` | Decision | SAFETY | High-severity injection in a referenced source (HG-14) |
 | `INJECTION_DETECTED_MEDIUM` | Decision | SAFETY | Medium-severity injection in a referenced source (SU-04) |
 | `ABLATION_NOT_PERMITTED` | 403 | n/a | Detector override requested outside the test or demo profile |
+| `CONTENT_NOT_FOUND` | 404 | n/a | Unknown `content_id` (content record read, or risk aggregation, which fails closed) |
+| `PAYLOAD_TOO_LARGE` | 413 | n/a | Request body or decoded content exceeds the safety module's size limit |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | n/a | `mime_type` not supported by the injection firewall, or the body does not parse as it |
 
 Site signals (`DOMAIN_NOT_IN_REGISTRY`, `DOMAIN_LOOKALIKE`, `DOMAIN_NEW`, `DOMAIN_REPUTATION_BAD`, `TLS_INVALID`, `NO_TLS`, `CHECKOUT_PAYEE_MISMATCH`, `EXTERNAL_PAYMENT_IFRAME`, `SUSPICIOUS_SCRIPT`, `DRIP_PRICING`) and injection techniques (`HIDDEN_CSS`, `ZERO_WIDTH`, `HTML_COMMENT`, `ATTRIBUTE_TEXT`, `AI_ADDRESSED_INSTRUCTION`, `PAYMENT_FIELD_OVERRIDE`, `AUTHORITY_CLAIM`) are **signal codes** inside scan reports. They are registered in [02-safety-scanning.md](modules/02-safety-scanning.md) §6.2 and §7.2.
 
@@ -1045,7 +1050,7 @@ Site signals (`DOMAIN_NOT_IN_REGISTRY`, `DOMAIN_LOOKALIKE`, `DOMAIN_NEW`, `DOMAI
 | `CHECKOUT_NOT_FOUND` | 404 | VERIFICATION | Checkout not stored or unknown to the merchant |
 | `CHECKOUT_EXPIRED` | 410 / Decision | VERIFICATION | Checkout past `expires_at` (HG-05) |
 | `CHECKOUT_SIGNATURE_INVALID` | Decision | VERIFICATION | Merchant signature invalid (HG-05) |
-| `MERCHANT_NOT_IN_REGISTRY` | 422 / Decision | VERIFICATION | Merchant not registered (HG-04) |
+| `MERCHANT_NOT_IN_REGISTRY` | 404 (registry lookup) / 422 / Decision | VERIFICATION | Merchant not registered (HG-04) |
 | `MERCHANT_SUSPENDED` | Decision | VERIFICATION | Merchant suspended (HG-04) |
 | `PAYEE_MISMATCH` | Decision | VERIFICATION | Checkout payee ≠ registry payee (HG-04) |
 | `PRODUCT_UNVERIFIED` | Decision | VERIFICATION | Product identity claim not VERIFIED (HG-12) |
@@ -1155,7 +1160,7 @@ The six threat classes come from the brief (Section 2). Classes T7 to T13 extend
 | T2 | Agent impersonation | KYA JWT + RFC 9421 proof of possession; nonce; revocation | Auth-failure monitoring | T1 | `impersonation/*` | Planned |
 | T3 | Payment credential theft | Agent never receives credentials (INV-09); handles instead of values; single-use bound tokens | PII-in-egress detection | T2, T4 | `credential/*` | Planned |
 | T4 | Tool misuse and privilege escalation | Fixed tool set; per-tool scopes; strict argument schemas; no generic tools | Tool-call logging | T2 | `tool-misuse/*` | Planned |
-| T5 | Fraudulent merchant | Registry membership; payee binding; signed checkout; recompute | Site scanner | T3, T2 | `merchant/*` | Planned |
+| T5 | Fraudulent merchant | Registry membership; payee binding; signed checkout; recompute | Site scanner, including domain age and reputation lookups | T3, T2 | `merchant/*` | Planned |
 | T6 | Hallucination | Agent claims verified against structured sources; deterministic calculator; abstention | Trust Score | T3 | `hallucination/*` | Planned |
 | T7 | Amount and currency manipulation | Minor-unit integers with explicit currency; agent-stated values never trusted | n/a | T3, T4 | `amount/*` | Planned |
 | T8 | Mandate bypass | Signed mandates; binding to agent key; atomic spend reservation | n/a | T1, T4 | `mandate/*` | Planned |
@@ -1169,6 +1174,7 @@ The six threat classes come from the brief (Section 2). Classes T7 to T13 extend
 | T16 | Memory poisoning | Policy preferences come only from signed mandates | n/a | T2 | Phase 2 | Phase 2 |
 | T17 | Insider rewrite of the whole chain | External anchoring of checkpoints | n/a | T5 | Phase 2 | Phase 2 |
 | T18 | Approval fatigue | Few, meaningful step-ups; diffs shown | Unnecessary step-up rate metric | T4, T6 | Metric | Planned |
+| T19 | Server-side request forgery through the scanner | Scanner egress guard: port allowlist, every resolved address must be global, connection pinned to the vetted address (DNS rebinding), coarse error codes | n/a | T2 | `tool-misuse/ATK-TOOL-201` | Implemented |
 
 Status values: `Planned`, `Implemented`, `Tested` (corpus passing in CI), `Phase 2`.
 
@@ -1179,6 +1185,10 @@ Status values: `Planned`, `Implemented`, `Tested` (corpus passing in CI), `Phase
 | Manipulation within authorized space | An injection can still influence choices among options the user authorized | Selection rule; showing alternatives; Phase 2 taint tracking |
 | Lying authoritative source | A registered merchant that signs false delivery or returns terms passes grounding | Evidence for disputes; merchant suspension; Phase 2 cross-source checks |
 | Detector evasion | Adaptive attackers defeat content detectors | Detectors are not relied on as primary controls (safety invariants, §2.2) |
+| Reputation lookup outage | A failed or rate-limited lookup adds no risk score, so a known-bad domain can pass that detector while it lasts | Registry and payee binding still apply; persistent cache; fail to step-up (Phase 2) |
+| Disclosure to lookup services | Domains that users' agents visit are sent to third parties | Host names only; `MANDIT_LIVE_LOOKUPS=off` |
+| Static visibility analysis | The injection firewall infers visibility from inline styles and `<style>` blocks only; external stylesheets and script-driven hiding are not seen, and text styled with a colour on an unknown dark background may be misread as hidden | Playwright computed-style worker (week 5) feeding the same segment model |
+| Unhinted cross-origin forms | A payment form whose fields carry no payment-like names, posting cross-origin, is not flagged by the site scanner | Signed checkout and payee binding (T5 primary controls); Playwright observation of submission targets |
 | Static-corpus overstatement | Block rates on a fixed corpus overstate robustness | Phase 2 adaptive attacker loop; honest reporting in module 06 §12 |
 
 ### 5. Change Log
@@ -1187,6 +1197,8 @@ Status values: `Planned`, `Implemented`, `Tested` (corpus passing in CI), `Phase
 |---|---|---|
 | 2026-11-23 | Initial threat model derived from the brief, the PRD and the Deep Dive review | Documentation baseline |
 | 2026-11-25 | T2: credential-layer controls implemented (pinned EdDSA KYA JWT verification, `cnf.jkt` key binding, small-order Ed25519 key rejection) with corpus cases `impersonation/ATK-IMP-001` to `006`. RFC 9421 request signatures, nonce replay and revocation remain Planned, so T2 status stays Planned. | Team 1 |
+| 2026-11-26 | T5: site scanner with registry, look-alike, domain-age and reputation signals added (detective control). Payee binding and signed checkout remain Planned, so T5 status stays Planned. Two residual risks added for external lookups. | Team 2 |
+| 2026-11-26 | Added T19 (scanner SSRF) and two residual risks found in the Team 2 safety-scanning review | Team 2 |
 
 ---
 
