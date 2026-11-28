@@ -75,7 +75,7 @@ docs/               Documentation
 
 ```bash
 git clone https://github.com/HeapifyGlobalCommunityy/Mandit-OS.git
-cd Mandit-OS && git checkout develop
+cd Mandit-OS
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env
@@ -118,7 +118,7 @@ Per-team specifications (`docs/modules/`):
 
 ## Contributing
 
-All pull requests target the **`develop`** branch. Branch names follow `<type>/<module>/<short-description>` (for example `feature/mandates/matching-function`), and every pull request declares which other modules it affects, or states "No". See [CONTRIBUTING.md](CONTRIBUTING.md).
+All pull requests target the **`main`** branch. Branch names follow `<type>/<module>/<short-description>` (for example `feature/mandates/matching-function`), and every pull request declares which other modules it affects, or states "No". See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
 

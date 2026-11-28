@@ -1,0 +1,27 @@
+# Synthetic merchant registry (modules/03 section 5). To add merchants for a local test, copy this
+# file, edit it, and point MANDIT_REGISTRY_FILE at the copy.
+merchants:
+  - merchant_id: mer_croma_demo
+    legal_name: Croma Demo Retail (synthetic)
+    domains: [croma.mock.mandit.local]
+    payees: { card_acquirer_id: acq_croma_001, upi_vpas: [croma.demo@mockbank] }
+    categories: [electronics.laptops]
+    base_url: http://localhost:8100/merchants/mer_croma_demo
+    status: VERIFIED
+    onboarded_at: 2026-11-01
+  - merchant_id: mer_reliance_demo
+    legal_name: Reliance Digital Demo (synthetic)
+    domains: [reliancedigital.mock.mandit.local, rdpay.mock.mandit.local]
+    payees: { card_acquirer_id: acq_reliance_001, upi_vpas: [reliance.demo@mockbank] }
+    categories: [electronics.laptops]
+    base_url: http://localhost:8100/merchants/mer_reliance_demo
+    status: VERIFIED
+    onboarded_at: 2026-11-01
+  - merchant_id: mer_oldshop_demo
+    legal_name: Old Shop Demo (synthetic)
+    domains: [oldshop.mock.mandit.local]
+    payees: { card_acquirer_id: acq_oldshop_001, upi_vpas: [oldshop.demo@mockbank] }
+    categories: [electronics.laptops]
+    base_url: http://localhost:8100/merchants/mer_oldshop_demo
+    status: SUSPENDED
+    onboarded_at: 2026-11-01

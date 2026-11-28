@@ -28,7 +28,7 @@ Team 6 **owns the truth about whether the product works**. It turns every threat
 | R8 | Metrics computation with Wilson 95% confidence intervals | 1 |
 | R9 | Ablation runs (scanners off, Trust Score off) | 1 |
 | R10 | Demo scenario scripts (primary and advanced) and rehearsal | 1 |
-| R11 | CI gate: the scripted corpus runs on every pull request to `develop` | 1 |
+| R11 | CI gate: the scripted corpus runs on every pull request to `main` | 1 |
 
 ## 3. Attacker Model (summary)
 
@@ -172,8 +172,8 @@ Every proportion is reported with *n* and a **Wilson 95% confidence interval**. 
 
 ## 9. CI Integration
 
-- `.github/workflows/redteam.yml` runs the **scripted** corpus on every pull request to `develop` and `main`. A regression in any HIGH-severity case fails the build.
-- The agent-mode corpus runs nightly on `develop` and before every release. Results are appended to [module 06 §12](#12-evaluation-results-log).
+- `.github/workflows/redteam.yml` runs the **scripted** corpus on every pull request to `main`. A regression in any HIGH-severity case fails the build.
+- The agent-mode corpus runs nightly on `main` and before every release. Results are appended to [module 06 §12](#12-evaluation-results-log).
 - New threats or edge cases discovered by anyone become corpus cases. Bug fixes for security defects must include the corpus case that reproduces them.
 
 ## 10. Milestones
