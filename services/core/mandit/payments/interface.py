@@ -96,6 +96,10 @@ class PspClient(Protocol):
 
     async def get_payment_status(self, psp_payment_id: str) -> Any: ...
 
+    async def find_payment_by_idempotency_key(self, idempotency_key: str) -> Any:
+        """Return the PSP payment created with this idempotency key, or None if none exists."""
+        ...
+
     async def get_public_jwks(self) -> Any: ...
 
 

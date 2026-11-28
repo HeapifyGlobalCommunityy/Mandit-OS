@@ -280,13 +280,17 @@ class TokenServiceImpl:
             )
         checkout_id: str = str(raw_checkout_id)
 
-        rail_raw = getattr(proposal, "rail", None) or getattr(proposal, "payment_method", "CARD")
+        rail_raw = getattr(proposal, "rail", None) or getattr(proposal, "payment_method", None)
         if rail_raw in ("CARD_TOKEN", "CARD"):
             rail = "CARD"
         elif rail_raw == "UPI":
             rail = "UPI"
         else:
-            rail = "CARD"
+            raise TokenIssueError(
+                "VALIDATION_ERROR",
+                "Proposal has no supported payment rail",
+                status_code=400,
+            )
 
         # 3. Re-verify agent active status
         if not await self.identity_provider.is_active(agent_id):
@@ -372,10 +376,10 @@ class TokenServiceImpl:
 
         # 6. TOCTOU: Refetch checkout from merchant and verify hash integrity
         refetched = await self.grounding_provider.refetch_checkout(checkout_id)
-        expected_checkout_hash = getattr(
-            proposal, "checkout_hash", getattr(refetched, "checkout_hash", "")
-        )
-        if refetched.checkout_hash != expected_checkout_hash:
+        # A missing hash on either side refuses; it must never compare a value to itself.
+        expected_checkout_hash = getattr(proposal, "checkout_hash", None)
+        actual_checkout_hash = getattr(refetched, "checkout_hash", None)
+        if not expected_checkout_hash or expected_checkout_hash != actual_checkout_hash:
             await self._emit_event(
                 session,
                 "TOKEN_ISSUE_REFUSED",
@@ -383,7 +387,7 @@ class TokenServiceImpl:
                 {
                     "code": TokenErrorCode.CHECKOUT_CHANGED,
                     "expected_hash": expected_checkout_hash,
-                    "actual_hash": refetched.checkout_hash,
+                    "actual_hash": actual_checkout_hash,
                 },
                 transaction_id=getattr(decision, "transaction_id", None),
             )

@@ -708,3 +708,31 @@ def test_concurrent_cas_redemption(test_setup, db_session):
             assert err.code == TokenErrorCode.TOKEN_ALREADY_REDEEMED
 
     asyncio.run(_run())
+
+
+def test_token_issuance_refuses_missing_proposal_checkout_hash(test_setup, db_session):
+    """A proposal without a checkout hash refuses instead of comparing the re-fetch to itself."""
+
+    async def _run() -> None:
+        service: TokenServiceImpl = test_setup["service"]
+        gr_prov: MockGroundingProvider = test_setup["grounding_provider"]
+        del gr_prov.proposal.checkout_hash
+        with pytest.raises(TokenIssueError) as exc_info:
+            await service.issue("dec_test_001", "res_01", session=db_session)
+        assert exc_info.value.code == TokenErrorCode.CHECKOUT_CHANGED
+
+    asyncio.run(_run())
+
+
+def test_token_issuance_refuses_unknown_rail(test_setup, db_session):
+    """An unsupported payment rail refuses instead of defaulting to CARD."""
+
+    async def _run() -> None:
+        service: TokenServiceImpl = test_setup["service"]
+        gr_prov: MockGroundingProvider = test_setup["grounding_provider"]
+        gr_prov.proposal.rail = "WIRE"
+        with pytest.raises(TokenIssueError) as exc_info:
+            await service.issue("dec_test_001", "res_01", session=db_session)
+        assert exc_info.value.code == "VALIDATION_ERROR"
+
+    asyncio.run(_run())

@@ -491,7 +491,7 @@ Response `200`:
 
 ### 8.2 Reconciliation (worker)
 
-Every 30 seconds, the worker selects payments in `UNKNOWN` or `PENDING` older than 15 seconds and queries `GET /psp/v1/payments/{psp_payment_id}`. It then moves them to a terminal state and commits or releases the spend. After 10 minutes without resolution, it raises `INCIDENT_LOGGED` with `RECONCILIATION_TIMEOUT`. **A charge is never retried while a payment is `UNKNOWN`.**
+Every 30 seconds, the worker selects payments in `CREATED`, `UNKNOWN` or `PENDING` older than 15 seconds and queries `GET /psp/v1/payments/{psp_payment_id}`. A payment whose PSP answer was lost has no `psp_payment_id`; the worker finds it with `GET /psp/v1/payments?idempotency_key=<payment_id>:auth` (card) or `:upi`. If the PSP has no such payment and the token has expired, so no request can still charge it, the payment is `FAILED` and the spend is released. It then moves them to a terminal state and commits or releases the spend. After 10 minutes without resolution, it raises `INCIDENT_LOGGED` with `RECONCILIATION_TIMEOUT`. **A charge is never retried while a payment is `UNKNOWN`.**
 
 ### 8.3 Webhooks: `POST /v1/payments/webhooks/mock-psp`
 
@@ -530,6 +530,7 @@ A separate service with its own database and keys. Card and UPI semantics follow
 | `POST /psp/v1/card/authorize` | `{ "credential_id", "merchant_id", "amount_minor", "currency", "idempotency_key" }` | `200 { "psp_payment_id", "status": "AUTHORIZED" \| "FAILED", "decline_code" }` | Enforces seller, `amount ≤ max`, expiry and single use **independently** via atomic CAS (`UPDATE ... WHERE status = 'ACTIVE'`) (defence in depth) |
 | `POST /psp/v1/card/capture` | `{ "psp_payment_id", "amount_minor" }` | `200 { "status": "CAPTURED" }` | `amount ≤ authorized`, otherwise `CAPTURE_EXCEEDS_AUTH` |
 | `GET /psp/v1/payments/{id}` | n/a | `200 { "psp_payment_id", "status", "amount_minor", "currency", "merchant_id" }` | Reconciliation source |
+| `GET /psp/v1/payments?idempotency_key=` | n/a | Same as above, or `404 PAYMENT_NOT_FOUND` | Finds a payment whose authorize or intent answer was lost |
 
 States: `CREATED → AUTHORIZED → CAPTURED`; `FAILED`.
 

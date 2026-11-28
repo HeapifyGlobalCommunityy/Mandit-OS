@@ -34,9 +34,9 @@ from mandit.payments.psp_client import (
     PspAuthorizeCardRequest,
     PspCaptureCardRequest,
     PspClientError,
-    PspConnectionError,
     PspCreateScopedCredentialRequest,
     PspCreateUpiIntentRequest,
+    PspOutcomeUnknownError,
     PspResponseError,
     PspTimeoutError,
 )
@@ -56,6 +56,28 @@ from mandit.payments.webhook_verifier import (
 )
 from mandit.tokens.models import PaymentTokenModel
 from mandit.tokens.service import TokenError, TokenIssueError
+
+
+def _classify_psp_failure(exc: Exception) -> tuple[PaymentStatus, str]:
+    """Map a PSP call failure to a payment outcome (modules/04 §8.1).
+
+    FAILED releases the spend reservation, so it is used only when the PSP definitely did not
+    act: it refused the request (4xx) or the connection was never made. Anything else
+    (timeouts, broken-off connections, 5xx, unreadable answers, unexpected errors) may have
+    moved money and is UNKNOWN, left to reconciliation. Failure codes are fixed values;
+    exception text is never stored or returned.
+    """
+    if isinstance(exc, PspOutcomeUnknownError) or not isinstance(exc, PspClientError):
+        code = (
+            PaymentErrorCode.PSP_TIMEOUT
+            if isinstance(exc, PspTimeoutError)
+            else PaymentErrorCode.PSP_COMMUNICATION_ERROR
+        )
+        return PaymentStatus.UNKNOWN, code.value
+    if isinstance(exc, PspResponseError):
+        return PaymentStatus.FAILED, exc.error_code or PaymentErrorCode.PSP_DECLINED.value
+    # PspConnectionError (never connected) or a request that could not be built.
+    return PaymentStatus.FAILED, PaymentErrorCode.PSP_COMMUNICATION_ERROR.value
 
 
 class PaymentError(Exception):
@@ -344,38 +366,65 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
             if checkout is None:
                 raise CheckoutChangedError(f"Refetched checkout '{checkout_id}' not found")
 
+            # Bind the charge to what policy approved. The decision must be for this exact
+            # proposal, and the re-fetched checkout must hash to the proposal's checkout (whose
+            # hash covers amount, currency, merchant and payee). A missing hash refuses: it is
+            # never a reason to skip the comparison.
+            decision_proposal_hash = getattr(decision, "proposal_hash", None)
+            if not decision_proposal_hash or decision_proposal_hash != getattr(
+                proposal, "proposal_hash", None
+            ):
+                raise CheckoutChangedError("Proposal changed since the policy decision")
+
             expected_checkout_hash = getattr(proposal, "checkout_hash", None)
             actual_checkout_hash = getattr(checkout, "checkout_hash", None)
-            if (
-                expected_checkout_hash
-                and actual_checkout_hash
-                and expected_checkout_hash != actual_checkout_hash
-            ):
+            if not expected_checkout_hash or expected_checkout_hash != actual_checkout_hash:
                 raise CheckoutChangedError(
-                    "Checkout hash changed during re-fetch (TOCTOU violation)"
+                    "Checkout hash changed or missing during re-fetch (TOCTOU violation)"
                 )
 
-            merchant_id: str = str(
-                getattr(checkout, "merchant_id", None) or getattr(proposal, "merchant_id", "")
-            )
-            payee_id: str = str(
-                getattr(checkout, "payee_id", None) or getattr(checkout, "payee", "")
-            )
+            # Money-relevant fields come from the verified checkout only, never defaults.
+            merchant_id = getattr(checkout, "merchant_id", None)
+            payee_raw = getattr(checkout, "payee_id", None) or getattr(checkout, "payee", None)
             raw_amount = getattr(checkout, "amount_minor", None)
             if raw_amount is None:
-                raw_amount = getattr(checkout, "total_minor", 0)
-            amount_minor: int = int(raw_amount or 0)
-            currency: str = str(getattr(checkout, "currency", "INR"))
+                raw_amount = getattr(checkout, "total_minor", None)
+            raw_currency = getattr(checkout, "currency", None)
+            if (
+                not isinstance(merchant_id, str)
+                or not merchant_id
+                or isinstance(raw_amount, bool)
+                or not isinstance(raw_amount, int)
+                or raw_amount <= 0
+                or not isinstance(raw_currency, str)
+                or len(raw_currency) != 3
+            ):
+                raise PaymentError(
+                    PaymentErrorCode.CHECKOUT_CHANGED,
+                    "Re-fetched checkout lacks a valid merchant, amount or currency",
+                    status_code=409,
+                )
+            amount_minor: int = raw_amount
+            currency: str = raw_currency
+            payee_id: str = payee_raw if isinstance(payee_raw, str) else ""
 
-            rail_str = getattr(proposal, "rail", None) or getattr(
-                proposal, "payment_method", "CARD"
-            )
+            rail_str = getattr(proposal, "rail", None) or getattr(proposal, "payment_method", None)
             if rail_str in ("CARD", "CARD_TOKEN"):
                 rail = PaymentRail.CARD
             elif rail_str == "UPI":
                 rail = PaymentRail.UPI
             else:
-                rail = PaymentRail.CARD
+                raise PaymentError(
+                    "VALIDATION_ERROR",
+                    "Proposal has no supported payment rail",
+                    status_code=400,
+                )
+            if rail == PaymentRail.UPI and not payee_id:
+                raise PaymentError(
+                    PaymentErrorCode.CHECKOUT_CHANGED,
+                    "Re-fetched checkout lacks the UPI payee",
+                    status_code=409,
+                )
 
             # 5. Reserve spend with MandateClient (Team 1)
             mandate_id = getattr(proposal, "mandate_id", None) or getattr(
@@ -420,9 +469,22 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
                     raise PaymentError(exc.code, exc.message, status_code=exc.status_code) from exc
                 raise
 
-            token_id = issued_token.token_record.token_id
+            token_record = issued_token.token_record
+            token_id = token_record.token_id
             signed_token = issued_token.signed_token
-            expires_at = issued_token.token_record.expires_at
+            expires_at = token_record.expires_at
+
+            # The token is what the PSP enforces: it must carry the amount charged here.
+            if (
+                getattr(token_record, "amount_minor", None) != amount_minor
+                or getattr(token_record, "currency", None) != currency
+                or getattr(token_record, "merchant_id", None) != merchant_id
+            ):
+                try:
+                    await self.mandate_client.release_spend(reservation_id, session=sess1)
+                except Exception:
+                    pass
+                raise CheckoutChangedError("Payment token does not match the verified checkout")
 
             # 7. Insert payments row (status=CREATED)
             payment_model = PaymentModel(
@@ -468,6 +530,8 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
         outcome_status: PaymentStatus = PaymentStatus.FAILED
         failure_code: str | None = None
 
+        # PSP idempotency keys derive from payment_id, so reconciliation can find a payment
+        # whose answer was lost (find_payment_by_idempotency_key) without charging again.
         if rail == PaymentRail.CARD:
             try:
                 # Step 2a: Create Scoped Credential
@@ -477,7 +541,7 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
                     max_amount_minor=amount_minor,
                     currency=currency,
                     expires_at=expires_at,
-                    idempotency_key=f"{idempotency_key}:cred",
+                    idempotency_key=f"{payment_id}:cred",
                 )
                 cred_resp = await self.psp_client.create_scoped_credential(cred_req)
 
@@ -487,7 +551,7 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
                     merchant_id=merchant_id,
                     amount_minor=amount_minor,
                     currency=currency,
-                    idempotency_key=f"{idempotency_key}:auth",
+                    idempotency_key=f"{payment_id}:auth",
                 )
                 auth_resp = await self.psp_client.authorize_card(auth_req)
                 psp_payment_id = auth_resp.psp_payment_id
@@ -507,17 +571,10 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
                         failure_code = "CAPTURE_FAILED"
                 else:
                     outcome_status = PaymentStatus.FAILED
-                    failure_code = auth_resp.decline_code or "PSP_DECLINED"
+                    failure_code = auth_resp.decline_code or PaymentErrorCode.PSP_DECLINED.value
 
-            except PspTimeoutError:
-                outcome_status = PaymentStatus.UNKNOWN
-                failure_code = "PSP_TIMEOUT"
-            except (PspResponseError, PspConnectionError, PspClientError) as exc:
-                outcome_status = PaymentStatus.FAILED
-                failure_code = getattr(exc, "error_code", "PSP_ERROR")
             except Exception as exc:
-                outcome_status = PaymentStatus.FAILED
-                failure_code = str(exc) or "PSP_ERROR"
+                outcome_status, failure_code = _classify_psp_failure(exc)
 
         elif rail == PaymentRail.UPI:
             try:
@@ -527,20 +584,14 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
                     amount_minor=amount_minor,
                     currency=currency,
                     expires_at=expires_at,
-                    idempotency_key=f"{idempotency_key}:upi",
+                    idempotency_key=f"{payment_id}:upi",
                 )
                 upi_resp = await self.psp_client.create_upi_intent(upi_req)
                 psp_payment_id = upi_resp.psp_payment_id
                 outcome_status = PaymentStatus.PENDING
-            except PspTimeoutError:
-                outcome_status = PaymentStatus.UNKNOWN
-                failure_code = "PSP_TIMEOUT"
-            except (PspResponseError, PspConnectionError, PspClientError) as exc:
-                outcome_status = PaymentStatus.FAILED
-                failure_code = getattr(exc, "error_code", "PSP_ERROR")
             except Exception as exc:
-                outcome_status = PaymentStatus.FAILED
-                failure_code = str(exc) or "PSP_ERROR"
+                # An intent may exist and be approved by the user: same rules as a charge.
+                outcome_status, failure_code = _classify_psp_failure(exc)
 
         # =========================================================================
         # PHASE 3: Reopen Transaction, Persist Outcome, Settle Spend, Update Idempotency
@@ -1014,8 +1065,13 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
     ) -> list[PaymentStatusResponse]:
         """Reconciliation worker scanning UNKNOWN and PENDING payments (modules/04 §8.2).
 
-        1. Selects payments in UNKNOWN or PENDING older than timeout_threshold_seconds.
-        2. Queries GET /psp/v1/payments/{psp_payment_id} for each.
+        1. Selects payments in CREATED, UNKNOWN or PENDING older than timeout_threshold_seconds.
+           CREATED rows are executions whose outcome was never written (crash or database
+           failure after the PSP call).
+        2. Queries GET /psp/v1/payments/{psp_payment_id} for each. A payment whose PSP answer
+           was lost has no psp_payment_id: it is looked up by its PSP idempotency key. If the
+           PSP has no such payment and the token has expired (so no charge can still arrive),
+           the payment failed and the spend is released.
         3. Moves resolved payments to terminal states and commits or releases spend.
         4. Never retries charges. Idempotent across multiple runs.
         """
@@ -1027,27 +1083,22 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
                 return []
 
             stmt = select(PaymentModel).where(
-                PaymentModel.status.in_([PaymentStatus.UNKNOWN.value, PaymentStatus.PENDING.value]),
+                PaymentModel.status.in_(
+                    [
+                        PaymentStatus.CREATED.value,
+                        PaymentStatus.UNKNOWN.value,
+                        PaymentStatus.PENDING.value,
+                    ]
+                ),
                 PaymentModel.created_at <= cutoff,
             )
             res = await sess.execute(stmt)
             unresolved_payments = res.scalars().all()
 
             for payment in unresolved_payments:
-                if not payment.psp_payment_id:
-                    continue
-
-                try:
-                    psp_status = await self.psp_client.get_payment_status(payment.psp_payment_id)
-                except Exception:
-                    continue
-
-                auth_status = psp_status.status
-                if auth_status not in ("CAPTURED", "SUCCESS", "FAILED", "EXPIRED"):
-                    continue
-
-                # Lookup reservation_id
+                # Lookup token (reservation and expiry)
                 reservation_id = None
+                token_expires_at = None
                 if payment.token_id:
                     stmt_tok = select(PaymentTokenModel).where(
                         PaymentTokenModel.token_id == payment.token_id
@@ -1056,8 +1107,40 @@ class PaymentOrchestratorImpl(PaymentOrchestrator):
                     tok_row = res_tok.scalar_one_or_none()
                     if tok_row:
                         reservation_id = tok_row.reservation_id
+                        token_expires_at = ensure_tz(tok_row.expires_at)
 
                 now = datetime.now(UTC)
+                try:
+                    if payment.psp_payment_id:
+                        psp_status = await self.psp_client.get_payment_status(
+                            payment.psp_payment_id
+                        )
+                    else:
+                        suffix = "upi" if payment.rail == PaymentRail.UPI.value else "auth"
+                        psp_status = await self.psp_client.find_payment_by_idempotency_key(
+                            f"{payment.payment_id}:{suffix}"
+                        )
+                except Exception:
+                    continue
+
+                if psp_status is None:
+                    # The PSP never created the payment. Only once the token has expired can
+                    # no request still arrive and charge it; until then keep the spend reserved.
+                    if token_expires_at is None or token_expires_at > now:
+                        continue
+                    auth_status = "FAILED"
+                else:
+                    auth_status = psp_status.status
+                    if not payment.psp_payment_id:
+                        payment.psp_payment_id = psp_status.psp_payment_id
+                        await sess.execute(
+                            update(PaymentModel)
+                            .where(PaymentModel.payment_id == payment.payment_id)
+                            .values(psp_payment_id=psp_status.psp_payment_id, updated_at=now)
+                        )
+
+                if auth_status not in ("CAPTURED", "SUCCESS", "FAILED", "EXPIRED"):
+                    continue
                 if auth_status in ("CAPTURED", "SUCCESS"):
                     target_status = (
                         PaymentStatus.CAPTURED.value

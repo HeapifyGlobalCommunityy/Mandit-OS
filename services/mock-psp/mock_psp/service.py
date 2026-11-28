@@ -710,6 +710,27 @@ class MockPspService:
 
     # --- Payment Status & Reconciliation ---
 
+    async def find_payment_by_idempotency_key(
+        self,
+        idempotency_key: str,
+        session: Any,
+    ) -> PspPaymentStatusResponse:
+        """Find the payment created with an idempotency key, for reconciling lost responses.
+
+        Lets Core resolve a payment whose authorize or UPI-intent answer never arrived without
+        sending the charge again.
+        """
+        if session is None:
+            raise PspServiceError("DB_REQUIRED", "Session required", 500)
+        stmt = select(PspPaymentModel.psp_payment_id).where(
+            PspPaymentModel.idempotency_key == idempotency_key
+        )
+        res = await session.execute(stmt)
+        psp_payment_id = res.scalar_one_or_none()
+        if psp_payment_id is None:
+            raise PspServiceError("PAYMENT_NOT_FOUND", "Payment not found", 404)
+        return await self.get_payment_status(psp_payment_id, session)
+
     async def get_payment_status(
         self,
         psp_payment_id: str,

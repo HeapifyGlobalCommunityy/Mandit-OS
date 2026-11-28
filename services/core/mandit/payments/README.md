@@ -98,7 +98,7 @@ Implemented in `mandit.payments.service.PaymentOrchestratorImpl` per `docs/modul
    - Idempotency lookup on `idempotency_keys` table. Replays completed responses directly (`200 OK`) and rejects concurrent duplicate executions.
    - Rejects mismatched requests using the same idempotency key with `409 IDEMPOTENCY_KEY_MISMATCH`.
    - Validates latest decision from Policy Engine: requires `outcome == 'ALLOW'` and unexpired validity.
-   - Refetches checkout from Grounding service and verifies SHA-256 hash integrity (TOCTOU protection).
+   - Refetches checkout from Grounding service and verifies SHA-256 hash integrity (TOCTOU protection). The decision's `proposal_hash` must equal the proposal's, and both checkout hashes must be present and equal; amount, currency, merchant and rail come from the verified checkout and proposal with no defaults, and must match the issued token.
    - Reserves spend via Team 1 `MandateClient.reserve_spend(...)`.
    - Issues single-use scoped token via Team 4 `TokenService.issue(...)` (releases spend if issuance fails).
    - Persists initial `PaymentModel` record with `status='CREATED'`.
@@ -108,11 +108,12 @@ Implemented in `mandit.payments.service.PaymentOrchestratorImpl` per `docs/modul
    - External PSP HTTP / In-Process calls run with **zero open database transactions**.
    - **Card Rail:** Creates scoped credential (`POST /psp/v1/card/scoped-credentials`), authorizes (`POST /psp/v1/card/authorize`), and captures (`POST /psp/v1/card/capture`).
    - **UPI Rail:** Creates UPI intent (`POST /psp/v1/upi/intents`) and transitions to `PENDING`.
+   - PSP idempotency keys are `<payment_id>:cred`, `:auth` and `:upi`, so reconciliation can find a payment whose answer was lost.
 3. **Phase 3 (Outcome Persistence & Settlement):**
    - **Transaction 2 Opens:**
    - **Success (CAPTURED / SUCCESS):** Commits spend via `MandateClient.commit_spend(...)`, transitions token to `REDEEMED`, marks checkout complete, and emits `PAYMENT_RESULT`.
-   - **Decline / Failure (FAILED):** Releases spend reservation via `MandateClient.release_spend(...)`, marks token `FAILED`, and emits `PAYMENT_RESULT`.
-   - **Timeout / Ambiguous Outcome (UNKNOWN):** Preserves spend reservation in `RESERVED` state (never released while rail outcome is unresolved), transitions payment and token to `UNKNOWN`, emits `PAYMENT_RESULT`. Charges are never retried while in `UNKNOWN`.
+   - **Decline / Failure (FAILED):** Only when the PSP definitely did not act: it refused the request (4xx) or the connection was never made. Releases spend reservation via `MandateClient.release_spend(...)`, marks token `FAILED`, and emits `PAYMENT_RESULT`. `failure_code` is a fixed code, never exception text.
+   - **Timeout / Ambiguous Outcome (UNKNOWN):** Timeouts, connections broken off after sending, 5xx answers, unreadable 2xx answers and unexpected errors. Preserves spend reservation in `RESERVED` state (never released while rail outcome is unresolved), transitions payment and token to `UNKNOWN`, emits `PAYMENT_RESULT`. Charges are never retried while in `UNKNOWN`.
    - **Pending (PENDING - UPI):** Preserves spend reservation pending callback / webhook resolution.
    - Finalizes `idempotency_keys` record with response status and serialized body.
    - **Transaction 2 Commits & Closes**.
@@ -139,8 +140,8 @@ Implemented in `mandit.payments.api` and `mandit.payments.service`:
   - Settle spend: commits on confirmed `CAPTURED`/`SUCCESS`; releases on `FAILED`/`EXPIRED`.
 
 ### Reconciliation Worker (`reconcile()`)
-- Scans `payments` for `UNKNOWN` and `PENDING` states older than `timeout_threshold_seconds` (default: 15s).
-- Queries `GET /psp/v1/payments/{psp_payment_id}` for authoritative status.
+- Scans `payments` for `CREATED`, `UNKNOWN` and `PENDING` states older than `timeout_threshold_seconds` (default: 15s). `CREATED` rows are executions whose outcome was never written.
+- Queries `GET /psp/v1/payments/{psp_payment_id}` for authoritative status. Without a `psp_payment_id` (the PSP answer was lost), it looks the payment up by its PSP idempotency key (`<payment_id>:auth` or `<payment_id>:upi`). If the PSP has none and the token has expired, the payment is `FAILED` and the spend is released.
 - Settles terminal outcomes (`CAPTURED`, `SUCCESS`, `FAILED`, `EXPIRED`) with corresponding spend commit/release.
 - Never repeats payment charges.
 - Idempotent across multiple runs.

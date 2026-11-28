@@ -82,7 +82,9 @@ class MockDecision:
         expires_at: datetime | None = None,
         transaction_id: str = "txn_api_001",
         mandate_id: str = "man_api_001",
+        proposal_hash: str = "sha256:proposal_hash_001",
     ) -> None:
+        self.proposal_hash = proposal_hash
         self.decision_id = decision_id
         self.proposal_id = proposal_id
         self.outcome = outcome
@@ -105,7 +107,9 @@ class MockProposal:
         currency: str = "INR",
         rail: str = "CARD",
         transaction_id: str = "txn_api_001",
+        proposal_hash: str = "sha256:proposal_hash_001",
     ) -> None:
+        self.proposal_hash = proposal_hash
         self.proposal_id = proposal_id
         self.agent_id = agent_id
         self.mandate_id = mandate_id

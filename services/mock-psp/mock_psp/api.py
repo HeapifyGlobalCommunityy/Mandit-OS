@@ -230,6 +230,25 @@ async def decline_upi_intent_alias(
 
 
 @router.get(
+    "/psp/v1/payments",
+    status_code=status.HTTP_200_OK,
+    response_model=PspPaymentStatusResponse,
+)
+async def find_payment_by_idempotency_key(
+    idempotency_key: str,
+    psp_service: MockPspService = Depends(get_psp_service),
+    session: Any = Depends(get_psp_db_session),
+) -> PspPaymentStatusResponse:
+    try:
+        return await psp_service.find_payment_by_idempotency_key(idempotency_key, session)
+    except PspServiceError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+
+
+@router.get(
     "/psp/v1/payments/{psp_payment_id}",
     status_code=status.HTTP_200_OK,
     response_model=PspPaymentStatusResponse,

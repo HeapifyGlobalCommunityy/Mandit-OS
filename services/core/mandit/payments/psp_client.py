@@ -27,7 +27,18 @@ class PspConnectionError(PspClientError):
     pass
 
 
-class PspTimeoutError(PspClientError):
+class PspOutcomeUnknownError(PspClientError):
+    """The request may have reached the PSP and taken effect, but no usable answer came back.
+
+    Covers timeouts, connections dropped after the request was sent, 5xx answers and 2xx
+    answers that cannot be parsed. The orchestrator must treat these as UNKNOWN (keep the
+    spend reserved, never retry the charge) and leave them to reconciliation.
+    """
+
+    pass
+
+
+class PspTimeoutError(PspOutcomeUnknownError):
     """Raised when request to PSP times out (read or connect).
 
     Must not be retried automatically for state-mutating requests (modules/04 §8.1).
@@ -52,6 +63,18 @@ class PspResponseError(PspClientError):
 
 class PspPayloadError(PspClientError):
     """Raised when PSP response is malformed, not valid JSON, or schema-invalid."""
+
+    pass
+
+
+class PspServerError(PspResponseError, PspOutcomeUnknownError):
+    """A 5xx answer: the PSP may have applied the request before failing."""
+
+    pass
+
+
+class PspInvalidResponseError(PspPayloadError, PspOutcomeUnknownError):
+    """A 2xx answer that cannot be read: the PSP accepted the request."""
 
     pass
 
@@ -198,6 +221,7 @@ class HttpPspClient(PspClient):
         method: str,
         path: str,
         json_data: dict[str, Any] | None = None,
+        params: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
@@ -206,15 +230,27 @@ class HttpPspClient(PspClient):
         try:
             if self._client is not None:
                 resp = await self._client.request(
-                    method, url, json=json_data, headers=req_headers, timeout=self.timeout
+                    method,
+                    url,
+                    json=json_data,
+                    params=params,
+                    headers=req_headers,
+                    timeout=self.timeout,
                 )
             else:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.request(method, url, json=json_data, headers=req_headers)
+                    resp = await client.request(
+                        method, url, json=json_data, params=params, headers=req_headers
+                    )
         except httpx.TimeoutException as exc:
             raise PspTimeoutError(f"PSP request to {path} timed out: {exc}") from exc
-        except httpx.RequestError as exc:
+        except httpx.ConnectError as exc:
+            # The connection was never established, so the PSP did not see the request.
             raise PspConnectionError(f"PSP connection to {path} failed: {exc}") from exc
+        except httpx.RequestError as exc:
+            # Read/write errors and dropped connections happen after the request may have
+            # been sent: the outcome is unknown, not a failure.
+            raise PspOutcomeUnknownError(f"PSP request to {path} broke off: {exc}") from exc
 
         if resp.status_code not in (200, 201):
             error_code = "PSP_ERROR"
@@ -232,7 +268,8 @@ class HttpPspClient(PspClient):
                     message = data.get("message", message)
             except Exception:
                 pass
-            raise PspResponseError(
+            error_cls = PspServerError if resp.status_code >= 500 else PspResponseError
+            raise error_cls(
                 f"PSP responded with status {resp.status_code}: {message}",
                 status_code=resp.status_code,
                 error_code=str(error_code),
@@ -241,7 +278,7 @@ class HttpPspClient(PspClient):
         try:
             return resp.json()
         except Exception as exc:
-            raise PspPayloadError(f"Invalid JSON response from PSP: {exc}") from exc
+            raise PspInvalidResponseError(f"Invalid JSON response from PSP: {exc}") from exc
 
     async def create_scoped_credential(self, req: Any) -> PspCreateScopedCredentialResponse:
         data = _serialize_request(req)
@@ -265,6 +302,19 @@ class HttpPspClient(PspClient):
 
     async def get_payment_status(self, psp_payment_id: str) -> PspPaymentStatusResponse:
         raw = await self._request("GET", f"/psp/v1/payments/{psp_payment_id}")
+        return PspPaymentStatusResponse.model_validate(raw)
+
+    async def find_payment_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> PspPaymentStatusResponse | None:
+        try:
+            raw = await self._request(
+                "GET", "/psp/v1/payments", params={"idempotency_key": idempotency_key}
+            )
+        except PspResponseError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
         return PspPaymentStatusResponse.model_validate(raw)
 
     async def get_public_jwks(self) -> PspJwksResponse:
@@ -350,6 +400,20 @@ class InProcessPspClient(PspClient):
         except Exception as exc:
             self._handle_service_error(exc)
 
+    async def find_payment_by_idempotency_key(
+        self, idempotency_key: str
+    ) -> PspPaymentStatusResponse | None:
+        session = self._get_session()
+        try:
+            raw = await self.psp_service.find_payment_by_idempotency_key(idempotency_key, session)
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 404:
+                return None
+            self._handle_service_error(exc)
+        return PspPaymentStatusResponse.model_validate(
+            raw.model_dump() if hasattr(raw, "model_dump") else raw
+        )
+
     async def get_public_jwks(self) -> PspJwksResponse:
         try:
             raw = self.psp_service.get_jwks()
@@ -360,10 +424,13 @@ class InProcessPspClient(PspClient):
             self._handle_service_error(exc)
 
     def _handle_service_error(self, exc: Exception) -> NoReturn:
-        status_code = getattr(exc, "status_code", 400)
+        # An exception without a PSP status code is an internal failure: like a 5xx, the
+        # PSP may already have applied the request.
+        status_code = getattr(exc, "status_code", 500)
         code = getattr(exc, "code", "PSP_ERROR")
         message = getattr(exc, "message", str(exc))
-        raise PspResponseError(
+        error_cls = PspServerError if status_code >= 500 else PspResponseError
+        raise error_cls(
             f"Mock PSP service error: {message}",
             status_code=status_code,
             error_code=code,

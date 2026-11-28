@@ -18,6 +18,7 @@
    - Expiry Reconciliation: On payment status retrieval (`GET /psp/v1/payments/{id}`), expired pending UPI intents and payments transition to `EXPIRED`, enqueuing a signed `payment.failed` webhook (`status: EXPIRED`) into the outbox without duplicates.
 3. **Reconciliation & Status**:
    - `GET /psp/v1/payments/{psp_payment_id}`: Source of truth for Core reconciliation worker.
+   - `GET /psp/v1/payments?idempotency_key=...`: Same status, found by the idempotency key of the authorize or UPI-intent call, for payments whose answer never reached Core. `404 PAYMENT_NOT_FOUND` when the PSP never created one.
 4. **Webhook Security & Discovery**:
    - Signs payloads using Ed25519 (`Mock-PSP-Signature: keyid="psp-2026-11",sig="..."`) over RFC 8785 JCS canonicalized bytes.
    - `GET /.well-known/psp-keys.json`: RFC 7517 JWK Set containing Mock PSP public key.
