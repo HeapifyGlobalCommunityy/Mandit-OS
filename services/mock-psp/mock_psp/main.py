@@ -3,24 +3,24 @@
 Base URL: http://mock-psp:8200 (REFERENCE §9.4).
 """
 
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from mock_psp.api import get_psp_db_session, get_psp_service, router
 from mock_psp.config import SETTINGS
 from mock_psp.crypto import PspKeyManager
+from mock_psp.db import AwaitableSession, build_engine
 from mock_psp.models import PspBase
 from mock_psp.service import MockPspService
 from mock_psp.token_client import HttpTokenClient
 from mock_psp.webhook_dispatcher import WebhookDispatcher
 
 # Authoritative database engine and sessionmaker
-engine = create_engine(SETTINGS.database_url, echo=False)
+engine = build_engine(SETTINGS.database_url)
 SessionLocal = sessionmaker(bind=engine)
 
 # Singleton service instances
@@ -40,14 +40,14 @@ psp_service = MockPspService(
 )
 
 
-def get_db() -> Generator[Session, None, None]:
-    """Provide transactional database session."""
-    db = SessionLocal()
+async def get_db() -> AsyncGenerator[AwaitableSession, None]:
+    """Provide a transactional session: committed on success, rolled back on error."""
+    db = AwaitableSession(SessionLocal())
     try:
         yield db
-        db.commit()
+        await db.commit()
     except Exception:
-        db.rollback()
+        await db.rollback()
         raise
     finally:
         db.close()
